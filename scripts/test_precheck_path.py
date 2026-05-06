@@ -1,0 +1,227 @@
+"""
+precheck_path.py 단위 테스트.
+
+agent 매트릭스(backend/frontend/shared)별로 허용/차단 경로를 검증한다.
+"""
+
+import io
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent / "hooks"))
+import precheck_path as hook  # noqa: E402
+
+
+@pytest.fixture
+def fake_project(tmp_path):
+    """가짜 프로젝트 트리 + .worktrees/{backend,frontend}."""
+    proj = tmp_path / "gym-check-in"
+    proj.mkdir()
+    for d in ("backend", "frontend", "db", "docs", "scripts", ".claude", "phases"):
+        (proj / d).mkdir()
+    (proj / ".worktrees").mkdir()
+    (proj / ".worktrees" / "backend").mkdir()
+    for d in ("backend", "db", "frontend"):
+        (proj / ".worktrees" / "backend" / d).mkdir()
+    (proj / ".worktrees" / "frontend").mkdir()
+    for d in ("frontend", "backend"):
+        (proj / ".worktrees" / "frontend" / d).mkdir()
+    return proj
+
+
+def _run(file_path: str, cwd: str) -> tuple[int, str]:
+    payload = json.dumps({"tool_input": {"file_path": file_path}, "cwd": cwd})
+    stdin = io.StringIO(payload)
+    captured = io.StringIO()
+    real_stderr = sys.stderr
+    sys.stderr = captured
+    try:
+        rc = hook.main(stdin=stdin)
+    finally:
+        sys.stderr = real_stderr
+    return rc, captured.getvalue()
+
+
+# === detect_agent 단위 ===
+
+def test_detect_agent_backend(fake_project):
+    cwd = str(fake_project / ".worktrees" / "backend")
+    assert hook.detect_agent(cwd) == "backend"
+
+
+def test_detect_agent_frontend(fake_project):
+    cwd = str(fake_project / ".worktrees" / "frontend")
+    assert hook.detect_agent(cwd) == "frontend"
+
+
+def test_detect_agent_shared_main(fake_project):
+    assert hook.detect_agent(str(fake_project)) == "shared"
+
+
+def test_detect_agent_shared_subdir(fake_project):
+    assert hook.detect_agent(str(fake_project / "scripts")) == "shared"
+
+
+# === backend worktree ===
+
+class TestBackendWorktree:
+    def test_allow_backend_file(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "backend")
+        path = str(fake_project / ".worktrees" / "backend" / "backend" / "main.go")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_db_file(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "backend")
+        path = str(fake_project / ".worktrees" / "backend" / "db" / "migrations" / "001.sql")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_block_frontend_file(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "backend")
+        path = str(fake_project / ".worktrees" / "backend" / "frontend" / "App.tsx")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
+        assert "frontend" in stderr.lower() or "frontend/" in stderr
+
+    def test_block_docs(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "backend")
+        # backend worktree 안에는 docs/가 없을 수 있으므로 파일 경로만 평가
+        path = str(fake_project / ".worktrees" / "backend" / "docs" / "API.md")
+        rc, _ = _run(path, cwd)
+        assert rc == 2
+
+
+# === frontend worktree ===
+
+class TestFrontendWorktree:
+    def test_allow_frontend_file(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        path = str(fake_project / ".worktrees" / "frontend" / "frontend" / "src" / "App.tsx")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_block_backend_file(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        path = str(fake_project / ".worktrees" / "frontend" / "backend" / "main.go")
+        rc, _ = _run(path, cwd)
+        assert rc == 2
+
+    def test_block_db_file(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        # frontend worktree에 db 디렉토리 만들고 차단 검증
+        (fake_project / ".worktrees" / "frontend" / "db").mkdir(exist_ok=True)
+        (fake_project / ".worktrees" / "frontend" / "db" / "migrations").mkdir(exist_ok=True)
+        path = str(fake_project / ".worktrees" / "frontend" / "db" / "migrations" / "x.sql")
+        rc, _ = _run(path, cwd)
+        assert rc == 2
+
+
+# === shared (메인) ===
+
+class TestSharedMain:
+    def test_allow_docs(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "docs" / "ROADMAP.md")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_scripts(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "scripts" / "execute.py")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_root_claude_md(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "CLAUDE.md")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_env_example(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / ".env.example")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_docker_compose(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "docker-compose.yml")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_gitignore(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / ".gitignore")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_allow_phases(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "phases" / "0-mvp" / "step1.md")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_block_backend(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "backend" / "main.go")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
+        assert "shared" in stderr
+
+    def test_block_frontend(self, fake_project):
+        cwd = str(fake_project)
+        path = str(fake_project / "frontend" / "src" / "App.tsx")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+
+    def test_block_db(self, fake_project):
+        """1.6 정책 변경: shared는 db도 차단. db는 backend agent가 처리."""
+        cwd = str(fake_project)
+        path = str(fake_project / "db" / "migrations" / "001.sql")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
+
+    def test_allow_module_claude_md(self, fake_project):
+        """모듈별 CLAUDE.md(backend/, frontend/, db/)는 정책 문서 — shared가 수정 가능."""
+        cwd = str(fake_project)
+        for sub in ("backend", "frontend", "db"):
+            path = str(fake_project / sub / "CLAUDE.md")
+            rc, stderr = _run(path, cwd)
+            assert rc == 0, f"{sub}/CLAUDE.md should be allowed in shared but rc={rc}: {stderr}"
+
+    def test_block_module_other_md(self, fake_project):
+        """모듈 안의 다른 .md는 여전히 차단(README 등은 코드 변경 일환으로 보지 않음)."""
+        cwd = str(fake_project)
+        path = str(fake_project / "backend" / "README.md")
+        rc, _ = _run(path, cwd)
+        assert rc == 2
+
+
+# === edge cases ===
+
+def test_empty_payload():
+    stdin = io.StringIO("")
+    rc = hook.main(stdin=stdin)
+    assert rc == 0
+
+
+def test_no_file_path():
+    stdin = io.StringIO(json.dumps({"tool_input": {}}))
+    rc = hook.main(stdin=stdin)
+    assert rc == 0
+
+
+def test_path_outside_project(fake_project):
+    """프로젝트 루트 밖 경로는 차단."""
+    cwd = str(fake_project)
+    rc, stderr = _run("/etc/passwd", cwd)
+    assert rc == 2
+    assert "작업 루트 밖" in stderr or "BLOCKED" in stderr
