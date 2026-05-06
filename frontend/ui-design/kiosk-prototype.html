@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>P-BOY MMA · Kiosk Prototype</title>
+<link rel="stylesheet" href="styles.css"/>
+<style>
+  body { background: #1a1a1a; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  #stage {
+    width: 1280px; height: 800px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 0 1px #333;
+    position: relative; overflow: hidden;
+    transform-origin: center center;
+  }
+  #stage-wrap {
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+</style>
+</head>
+<body>
+<div id="stage-wrap">
+  <div id="stage"></div>
+</div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="logo.jsx"></script>
+<script type="text/babel" src="kiosk-screens-1.jsx"></script>
+<script type="text/babel" src="kiosk-screens-2.jsx"></script>
+<script type="text/babel" src="kiosk-idle-variants.jsx"></script>
+
+<script type="text/babel">
+const candidates = [
+  { id: 1, memberNo: 1247, name: '홍길동', phone: '010-1234-5678', birth: '1990-04-15', plan: '월권 3M' },
+  { id: 2, memberNo: 894, name: '홍길동', phone: '010-9876-5432', birth: '1985-11-22', plan: '10회권' },
+];
+
+function KioskApp() {
+  const [screen, setScreen] = React.useState('idle');
+  const [voiceState, setVoiceState] = React.useState('listening');
+  const [voiceAttempt, setVoiceAttempt] = React.useState(1);
+  const [tab, setTab] = React.useState('phone');
+  const [value, setValue] = React.useState('');
+  const [picked, setPicked] = React.useState(null);
+  const [count, setCount] = React.useState(47);
+
+  // Voice flow simulation
+  React.useEffect(() => {
+    if (screen !== 'voice') return;
+    setVoiceState('listening');
+    const t = setTimeout(() => {
+      if (voiceAttempt >= 3) {
+        setScreen('typing');
+        setVoiceAttempt(1);
+      } else {
+        setVoiceState('failed');
+      }
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [screen, voiceAttempt]);
+
+  const goVoice = () => { setVoiceAttempt(1); setScreen('voice'); };
+  const goType = () => { setValue(''); setTab('phone'); setScreen('typing'); };
+  const onKey = (k) => {
+    if (k === '⌫') setValue(v => v.slice(0, -1));
+    else if (k === '⇧') {}
+    else setValue(v => (v.length < 12 ? v + k : v));
+  };
+  const submit = () => {
+    if (!value) return;
+    setScreen('pick');
+  };
+  const onPick = (m) => {
+    setPicked(m);
+    setCount(c => c + 1);
+    setScreen('done');
+  };
+  const reset = () => {
+    setScreen('idle');
+    setValue('');
+    setVoiceAttempt(1);
+    setPicked(null);
+  };
+
+  if (screen === 'idle') return <KioskIdle onTap={() => setScreen('input')} checkInCount={count}/>;
+  if (screen === 'input') return <KioskInputSelect onVoice={goVoice} onType={goType} onBack={reset}/>;
+  if (screen === 'voice') return <KioskVoiceSearch
+    state={voiceState} attempt={voiceAttempt}
+    transcript={voiceState === 'failed' ? '...' : ''}
+    onSwitchType={() => setScreen('typing')}
+    onBack={() => setScreen('input')}
+  />;
+  if (screen === 'typing') return <KioskTypingSearch
+    tab={tab} value={value}
+    onTab={setTab} onKey={onKey} onSubmit={submit}
+    onBack={() => setScreen('input')}
+  />;
+  if (screen === 'pick') return <KioskMemberPick
+    query={value || '홍길동'}
+    candidates={candidates}
+    onPick={onPick}
+    onBack={() => setScreen('typing')}
+  />;
+  if (screen === 'done') return <KioskDone
+    name={picked?.name || '홍길동'}
+    memberNo={picked?.memberNo || 1247}
+    plan="월권 3개월" daysLeft={47} todayCount={count}
+    onAuto={reset}
+  />;
+  return null;
+}
+
+// Scaling
+function fit() {
+  const stage = document.getElementById('stage');
+  const wrap = document.getElementById('stage-wrap');
+  const sx = (wrap.clientWidth - 40) / 1280;
+  const sy = (wrap.clientHeight - 40) / 800;
+  const s = Math.min(sx, sy, 1);
+  stage.style.transform = `scale(${s})`;
+}
+window.addEventListener('resize', fit);
+fit();
+
+const root = ReactDOM.createRoot(document.getElementById('stage'));
+root.render(<KioskApp/>);
+</script>
+</body>
+</html>
