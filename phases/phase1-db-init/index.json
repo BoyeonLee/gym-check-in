@@ -13,7 +13,8 @@
       "step": 2,
       "name": "seed",
       "agent": "backend",
-      "status": "pending"
+      "status": "completed",
+      "summary": "001_admin_and_branch.sql 추가; psql -v 변수로 해시·이름·주소 주입, ON CONFLICT 멱등, 평문 시크릿 미포함."
     }
   ]
 }
