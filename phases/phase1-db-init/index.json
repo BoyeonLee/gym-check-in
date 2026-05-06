@@ -2,7 +2,18 @@
   "project": "gym-check-in",
   "phase": "phase1-db-init",
   "steps": [
-    { "step": 1, "name": "migrations", "agent": "backend", "status": "pending" },
-    { "step": 2, "name": "seed",       "agent": "backend", "status": "pending" }
+    {
+      "step": 1,
+      "name": "migrations",
+      "agent": "backend",
+      "status": "completed",
+      "summary": "00001_init.sql + 00002_updated_at_trigger.sql 추가; 10개 테이블/인덱스/EXCLUDE/CHECK/부분 유니크/트리거 적재. goose up→down→up 왕복 통과."
+    },
+    {
+      "step": 2,
+      "name": "seed",
+      "agent": "backend",
+      "status": "pending"
+    }
   ]
 }
