@@ -1,0 +1,8 @@
+{
+  "project": "gym-check-in",
+  "phase": "phase1-db-init",
+  "steps": [
+    { "step": 1, "name": "migrations", "agent": "backend", "status": "pending" },
+    { "step": 2, "name": "seed",       "agent": "backend", "status": "pending" }
+  ]
+}
