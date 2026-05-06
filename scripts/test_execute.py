@@ -886,15 +886,28 @@ class TestPostCompletionGate:
         gate, msg = executor._post_completion_gate("shared", "/tmp")
         assert gate == "pass"
 
-    def test_backend_blocks_when_go_missing(self, executor):
+    def test_backend_blocks_when_go_missing(self, executor, tmp_path):
+        # backend/go.mod가 있을 때만 binary 검사가 일어난다 — 그 시점에 go가 없으면 block
+        (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "go.mod").write_text("module test\n")
         executor._which = lambda b: False
-        gate, msg = executor._post_completion_gate("backend", "/tmp")
+        gate, msg = executor._post_completion_gate("backend", str(tmp_path))
         assert gate == "block"
         assert "go" in msg
 
-    def test_backend_pass_with_mocked_subprocess(self, executor, tmp_path):
-        # backend 디렉토리 모킹
+    def test_backend_skips_acceptance_when_no_go_mod(self, executor, tmp_path):
+        # Phase 1처럼 db/ 변경만 있고 backend 스캐폴드(go.mod)가 아직 없으면
+        # build/test 대상이 없으므로 acceptance를 skip → review만 통과하면 pass.
         (tmp_path / "backend").mkdir()
+        executor._which = lambda b: False  # go 미설치여도 skip 경로라 영향 없어야 함
+        executor._run_review = lambda cwd: (True, "")
+        gate, msg = executor._post_completion_gate("backend", str(tmp_path))
+        assert gate == "pass", f"got {gate}: {msg}"
+
+    def test_backend_pass_with_mocked_subprocess(self, executor, tmp_path):
+        # backend 디렉토리 + go.mod 모킹
+        (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "go.mod").write_text("module test\n")
         executor._which = lambda b: True
         executor._run_review = lambda cwd: (True, "")
         with patch("execute.subprocess.run") as mock_run:
@@ -904,6 +917,7 @@ class TestPostCompletionGate:
 
     def test_backend_retry_on_go_test_fail(self, executor, tmp_path):
         (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "go.mod").write_text("module test\n")
         executor._which = lambda b: True
         with patch("execute.subprocess.run") as mock_run:
             # go build 통과, go test 실패

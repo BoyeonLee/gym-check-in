@@ -629,6 +629,11 @@ class StepExecutor:
         ],
     }
 
+    ACCEPTANCE_MANIFEST = {
+        "backend": "go.mod",
+        "frontend": "package.json",
+    }
+
     def _which(self, binary: str) -> bool:
         r = subprocess.run(["which", binary], capture_output=True, text=True)
         return r.returncode == 0 and bool(r.stdout.strip())
@@ -637,6 +642,8 @@ class StepExecutor:
         """agent별 lint/build/test 명령을 실제로 실행. (passed, message) 반환.
 
         message가 'TOOL_MISSING:<binary>'로 시작하면 blocked로 분류.
+        manifest(go.mod / package.json)가 아직 없는 모듈은 스캐폴드 이전 단계
+        (예: Phase 1 DB-only)이므로 빌드 대상이 없어 acceptance를 건너뛴다.
         """
         agents_to_run = []
         if agent == "backend":
@@ -650,6 +657,9 @@ class StepExecutor:
 
         for a in agents_to_run:
             sub_cwd = str(Path(cwd) / a) if (Path(cwd) / a).is_dir() else cwd
+            manifest = Path(sub_cwd) / self.ACCEPTANCE_MANIFEST[a]
+            if not manifest.exists():
+                continue
             cmds = self.ACCEPTANCE_CMDS[a]
             primary = cmds[0][0]
             if not self._which(primary):
