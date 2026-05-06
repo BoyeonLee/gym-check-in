@@ -4,6 +4,32 @@ out/
 next-env.d.ts
 tsconfig.tsbuildinfo
 
+# python
+__pycache__/
+*.pyc
+
 # phase execution outputs
 phases/**/phase*-output.json
 phases/**/step*-output.json
+
+# git worktrees created by scripts/execute.py
+.worktrees/
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# go
+/backend/bin/
+*.test
+*.out
+
+# vite / frontend build
+/frontend/dist/
+/frontend/.vite/
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
