@@ -1,5 +1,5 @@
 {
   "phases": [
-    { "dir": "phase1-db-init", "status": "pending" }
+    { "dir": "phase1-db-init", "status": "completed" }
   ]
 }
