@@ -115,6 +115,27 @@ func run() error {
 	protectedAuth.POST("/logout", authHandlers.Logout)
 	protectedAuth.POST("/password", authHandlers.PasswordChange)
 
+	// step 4 — admin/branches CRUD. Authenticated + must_change_password gate;
+	// mutation routes additionally require role='global'. GET /api/branches is
+	// open to both roles so a branch admin can render their own branch info.
+	branchHandlers := &httpapi.BranchHandlers{Pool: pool}
+	adminHandlers := &httpapi.AdminHandlers{Pool: pool}
+
+	api := r.Group("/api")
+	api.Use(middleware.RequireAuth(issuer, pool))
+	api.Use(middleware.MustChangePasswordGuard())
+	api.GET("/branches", branchHandlers.List)
+
+	apiGlobal := api.Group("", middleware.RequireGlobal())
+	apiGlobal.POST("/branches", branchHandlers.Create)
+	apiGlobal.PATCH("/branches/:id", branchHandlers.Update)
+	apiGlobal.DELETE("/branches/:id", branchHandlers.Delete)
+	apiGlobal.GET("/admins", adminHandlers.List)
+	apiGlobal.POST("/admins", adminHandlers.Create)
+	apiGlobal.PATCH("/admins/:id", adminHandlers.Update)
+	apiGlobal.DELETE("/admins/:id", adminHandlers.Delete)
+	apiGlobal.POST("/admins/:id/reset-password", adminHandlers.ResetPassword)
+
 	srv := &nethttp.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           r,

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -178,6 +179,226 @@ func RecordLoginFailure(ctx context.Context, q Querier, id int64, now time.Time)
 	`
 	if _, err := q.Exec(ctx, stmt, id, now); err != nil {
 		return fmt.Errorf("repo: record login failure: %w", err)
+	}
+	return nil
+}
+
+// AdminListRow is the projection used by /api/admins (list). It includes a
+// joined branch_name (NULL for global admins) so a single query feeds the
+// frontend's "지점 식별" requirement without a per-row lookup.
+type AdminListRow struct {
+	ID                 int64
+	Username           string
+	Role               string
+	BranchID           *int64
+	BranchName         *string
+	MustChangePassword bool
+	LastLoginAt        *time.Time
+	CreatedAt          time.Time
+}
+
+// CreateAdminInput / UpdateAdminInput keep the writes-only surfaces small.
+// Handler is responsible for hashing PlainPassword via auth.HashPassword and
+// passing it as PasswordHash here — keeping bcrypt out of repo lets us test
+// auth-state mutations without spinning up CPU-heavy hashing per row.
+type CreateAdminInput struct {
+	Username     string
+	Role         string // "global" | "branch"
+	BranchID     *int64
+	PasswordHash string // bcrypt hash, never plaintext
+}
+
+// UpdateAdminInput is a partial-update payload. Nil pointer = leave alone.
+//
+// BranchIDSet is the explicit "I intend to change branch_id" flag — it lets
+// the caller distinguish "absent" (don't touch the column) from "explicit
+// NULL" (clear it because role just flipped to global). Without this flag we
+// couldn't write a JSON body like `{"role":"global"}` and have the column
+// auto-clear. When BranchIDSet=true and BranchID=nil, the column is set to
+// NULL; when BranchIDSet=true and BranchID points to an int64, that value is
+// used.
+type UpdateAdminInput struct {
+	Username    *string
+	Role        *string
+	BranchIDSet bool
+	BranchID    *int64
+}
+
+// ListAdmins returns all active admins with their branch_name joined.
+// Ordering is `id ASC` — small operator list, deterministic for tests.
+func ListAdmins(ctx context.Context, q Querier) ([]AdminListRow, error) {
+	const stmt = `
+		select a.id, a.username, a.role, a.branch_id, b.name,
+		       a.must_change_password, a.last_login_at, a.created_at
+		from admins a
+		left join branches b on b.id = a.branch_id and b.deleted_at is null
+		where a.deleted_at is null
+		order by a.id asc
+	`
+	rows, err := q.Query(ctx, stmt)
+	if err != nil {
+		return nil, fmt.Errorf("repo: list admins: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]AdminListRow, 0)
+	for rows.Next() {
+		var r AdminListRow
+		if err := rows.Scan(
+			&r.ID, &r.Username, &r.Role, &r.BranchID, &r.BranchName,
+			&r.MustChangePassword, &r.LastLoginAt, &r.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("repo: list admins scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("repo: list admins rows: %w", err)
+	}
+	return out, nil
+}
+
+// CreateAdmin inserts a new admin row with must_change_password=true and
+// temp_password_expires_at=now+24h, matching backend/CLAUDE.md ("생성 row의
+// must_change_password=true + temp_password_expires_at=now()+24h 강제").
+// password_updated_at stays NULL — a fresh admin has no "stale token cutoff".
+func CreateAdmin(ctx context.Context, q Querier, in CreateAdminInput, now time.Time) (int64, error) {
+	const stmt = `
+		insert into admins (
+			username, password_hash, must_change_password,
+			temp_password_expires_at, role, branch_id
+		)
+		values ($1, $2, true, $3, $4, $5)
+		returning id
+	`
+	tempExpiry := now.Add(24 * time.Hour)
+	var id int64
+	if err := q.QueryRow(ctx, stmt,
+		in.Username, in.PasswordHash, tempExpiry, in.Role, in.BranchID,
+	).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// UpdateAdmin applies a partial update over username/role/branch_id. SET
+// clauses are appended dynamically using positional placeholders so the
+// statement stays parameterized (CLAUDE.md "no string concat for SQL").
+//
+// password_hash / must_change_password / failed_login_count / locked_until /
+// temp_password_expires_at are intentionally NOT settable here — those go
+// through dedicated mutators (UpdatePassword / ResetPassword / login flows).
+//
+// Returns pgx.ErrNoRows for missing/soft-deleted targets.
+func UpdateAdmin(ctx context.Context, q Querier, id int64, in UpdateAdminInput, now time.Time) error {
+	sets := make([]string, 0, 3)
+	args := make([]any, 0, 4)
+	args = append(args, id)
+
+	if in.Username != nil {
+		args = append(args, *in.Username)
+		sets = append(sets, fmt.Sprintf("username = $%d", len(args)))
+	}
+	if in.Role != nil {
+		args = append(args, *in.Role)
+		sets = append(sets, fmt.Sprintf("role = $%d", len(args)))
+	}
+	if in.BranchIDSet {
+		args = append(args, in.BranchID) // nil pointer → SQL NULL via pgx
+		sets = append(sets, fmt.Sprintf("branch_id = $%d", len(args)))
+	}
+	if len(sets) == 0 {
+		// Nothing to change — short-circuit but verify existence so the
+		// caller still gets ErrNoRows for a missing target.
+		const checkStmt = `select 1 from admins where id = $1 and deleted_at is null`
+		var one int
+		if err := q.QueryRow(ctx, checkStmt, id).Scan(&one); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return pgx.ErrNoRows
+			}
+			return fmt.Errorf("repo: update admin existence check: %w", err)
+		}
+		return nil
+	}
+
+	stmt := `update admins set ` + strings.Join(sets, ", ") +
+		` where id = $1 and deleted_at is null`
+	tag, err := q.Exec(ctx, stmt, args...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	_ = now
+	return nil
+}
+
+// SoftDeleteAdmin sets deleted_at=now and bumps password_updated_at=now.
+// Bumping password_updated_at is the trick that makes both outstanding
+// access AND refresh tokens fail on the next request without needing a
+// per-token revocation list — the auth middleware compares claim.iat
+// against this column.
+func SoftDeleteAdmin(ctx context.Context, q Querier, id int64, now time.Time) error {
+	const stmt = `
+		update admins
+		set deleted_at = $2,
+		    password_updated_at = $2
+		where id = $1 and deleted_at is null
+	`
+	tag, err := q.Exec(ctx, stmt, id, now)
+	if err != nil {
+		return fmt.Errorf("repo: soft delete admin: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// ResetPassword installs a new (already bcrypt'd) hash and resets every
+// auth-state column that should not survive an operator-issued reset:
+// must_change_password=true, temp_password_expires_at=now+24h,
+// failed_login_count=0, locked_until=NULL, password_updated_at=now (so
+// existing tokens become stale).
+func ResetPassword(ctx context.Context, q Querier, id int64, newHash string, now time.Time) error {
+	const stmt = `
+		update admins set
+			password_hash            = $2,
+			must_change_password     = true,
+			temp_password_expires_at = $3,
+			failed_login_count       = 0,
+			locked_until             = null,
+			password_updated_at      = $4
+		where id = $1 and deleted_at is null
+	`
+	tag, err := q.Exec(ctx, stmt, id, newHash, now.Add(24*time.Hour), now)
+	if err != nil {
+		return fmt.Errorf("repo: reset password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// BumpPasswordUpdatedAt stamps password_updated_at=now without touching the
+// hash. The /api/admins PATCH handler uses it whenever role or branch_id
+// changes so the affected user's outstanding access/refresh tokens fail on
+// the next request — the same iat<password_updated_at check the auth
+// middleware already runs covers both kinds of revocation. Returns
+// pgx.ErrNoRows for missing/soft-deleted targets.
+func BumpPasswordUpdatedAt(ctx context.Context, q Querier, id int64, now time.Time) error {
+	const stmt = `
+		update admins set password_updated_at = $2
+		where id = $1 and deleted_at is null
+	`
+	tag, err := q.Exec(ctx, stmt, id, now)
+	if err != nil {
+		return fmt.Errorf("repo: bump password_updated_at: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
 	}
 	return nil
 }
