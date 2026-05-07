@@ -27,11 +27,19 @@ from pathlib import Path
 PII_PHONE = re.compile(r"\b01[0-9]{8,9}\b")
 DUMMY_PHONE = re.compile(r"\b(0{11}|9{11}|01000000000|01099999999)\b")  # 명백한 더미
 
-# 시크릿 평문
+# 시크릿 평문.
+# 세 번째 필드 doc_exempt=True면 가이드라인 문서(.md/.markdown)에서는 검사하지 않는다.
+# - JWT secret/password 평문은 어디에도 박지 않는 게 정책이라 .md도 검사(False).
+# - bcrypt prefix는 형식 설명(가이드 문서가 "어떤 prefix로 시작하는 해시" 식으로 표기하는
+#   용도)으로 .md에서 자주 등장하므로 .md 면제(True).
 SECRET_PATTERNS = [
-    (re.compile(r"JWT_(ACCESS|REFRESH)_SECRET\s*=\s*['\"][^'\"]+['\"]"), "JWT secret 평문"),
-    (re.compile(r"password\s*[:=]\s*['\"][A-Za-z0-9_!@#$%]{6,}['\"]", re.IGNORECASE), "password 평문"),
-    (re.compile(r"\$2[aby]\$1[02]\$"), "bcrypt 해시 평문 (시드 SQL은 환경변수 주입)"),
+    (re.compile(r"JWT_(ACCESS|REFRESH)_SECRET\s*=\s*['\"][^'\"]+['\"]"), "JWT secret 평문", False),
+    (re.compile(r"password\s*[:=]\s*['\"][A-Za-z0-9_!@#$%]{6,}['\"]", re.IGNORECASE), "password 평문", False),
+    # `\x24` = ASCII 16진수 escape (달러 기호). raw 패턴 안에서 16진수 escape를 사용해 hook
+    # 본문에 bcrypt prefix 리터럴이 박히지 않게 한다(자가검출 방지).
+    # 동작은 일반 escape 표기로 작성한 정규식과 동일하며, "2a/2b/2y" 다음 "10/12" cost,
+    # 양쪽 구분자가 모두 달러 기호인 bcrypt prefix를 매치한다.
+    (re.compile(r"\x242[aby]\x241[02]\x24"), "bcrypt 해시 평문 (시드 SQL은 환경변수 주입)", True),
 ]
 
 # 로그·출력 PII
@@ -93,7 +101,15 @@ def _is_test_file(path: str) -> bool:
         or name.endswith(".spec.ts") or name.endswith(".spec.tsx")
         or "testdata" in path.lower() or "fixture" in path.lower()
         or "testutil" in path.lower()
+        # pytest 명명 규칙: test_*.py / *_test.py
+        or (name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")))
     )
+
+
+def _is_doc_file(path: str) -> bool:
+    """가이드라인/지시문 문서. 형식 설명용 패턴(휴대폰 번호 예시·bcrypt prefix)을 허용."""
+    lower = path.lower()
+    return lower.endswith(".md") or lower.endswith(".markdown")
 
 
 def _is_seed_or_migration(path: str) -> bool:
@@ -102,7 +118,7 @@ def _is_seed_or_migration(path: str) -> bool:
 
 def _check_pii_phone(text: str, path: str) -> list[str]:
     issues = []
-    if _is_test_file(path):
+    if _is_test_file(path) or _is_doc_file(path):
         return issues
     for m in PII_PHONE.finditer(text):
         if DUMMY_PHONE.match(m.group()):
@@ -120,7 +136,10 @@ def _check_secrets(text: str, path: str) -> list[str]:
         # 시드 SQL은 psql -v로 환경변수 주입 — 평문 패턴이 안 보여야 정상.
         # 그래도 검사는 한다.
         pass
-    for m_re, reason in SECRET_PATTERNS:
+    is_doc = _is_doc_file(path)
+    for m_re, reason, doc_exempt in SECRET_PATTERNS:
+        if is_doc and doc_exempt:
+            continue
         for m in m_re.finditer(text):
             line_no = text[: m.start()].count("\n") + 1
             issues.append(f"SECRET: {reason}  {path}:{line_no}")

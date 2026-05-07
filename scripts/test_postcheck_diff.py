@@ -209,6 +209,74 @@ import (
         assert rc == 0
 
 
+# === 가이드라인 문서(.md) 정책 완화 ===
+
+class TestDocFiles:
+    """
+    .md/.markdown 가이드라인 문서는 형식 설명 패턴(휴대폰 번호 예시·bcrypt prefix)을 허용한다.
+    그러나 진짜 시크릿(JWT 키·password 평문)은 .md에서도 그대로 차단한다.
+    """
+
+    def test_allow_phone_in_md(self, tmp_path):
+        path = _write(tmp_path, "phases/phase2/step5.md", '''
+# Step 5
+관리자 응답은 phone(예: 01012345678 같은 11자리 숫자)을 풀 노출한다.
+''')
+        rc, _ = _run(path)
+        assert rc == 0
+
+    def test_allow_bcrypt_prefix_in_md(self, tmp_path):
+        path = _write(tmp_path, "phases/phase2/step1.md", '''
+# Step 1
+출력은 $2a$12$ 또는 $2b$12$로 시작하는 60자 bcrypt 해시.
+''')
+        rc, _ = _run(path)
+        assert rc == 0
+
+    def test_block_jwt_secret_in_md(self, tmp_path):
+        path = _write(tmp_path, "phases/phase2/step3.md", '''
+# Step 3
+export JWT_ACCESS_SECRET="supersecret123"
+''')
+        rc, stderr = _run(path)
+        assert rc == 2
+        assert "SECRET" in stderr
+        assert "JWT" in stderr
+
+    def test_block_password_plain_in_md(self, tmp_path):
+        path = _write(tmp_path, "docs/example.md", '''
+sample config:
+password = "MyPassword123"
+''')
+        rc, stderr = _run(path)
+        assert rc == 2
+        assert "SECRET" in stderr
+
+    def test_allow_phone_in_markdown_extension(self, tmp_path):
+        path = _write(tmp_path, "phases/x.markdown", '''
+phone 예시: 01012345678
+''')
+        rc, _ = _run(path)
+        assert rc == 0
+
+    def test_phone_still_blocked_in_go_code(self, tmp_path):
+        # 이전 정책 유지 확인 (regression)
+        path = _write(tmp_path, "backend/seed.go", '''
+package main
+const myPhone = "01012345678"
+''')
+        rc, _ = _run(path)
+        assert rc == 2
+
+    def test_bcrypt_still_blocked_in_go_code(self, tmp_path):
+        # 이전 정책 유지 확인 (regression)
+        path = _write(tmp_path, "backend/seed.go", '''
+const seedHash = "$2a$12$abcdefghij1234567890ab"
+''')
+        rc, _ = _run(path)
+        assert rc == 2
+
+
 # === edge cases ===
 
 def test_no_file_path():
