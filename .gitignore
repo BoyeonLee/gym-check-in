@@ -33,3 +33,6 @@ phases/**/step*-output.json
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code 임시 파일 (ScheduleWakeup lock 등)
+.claude/scheduled_tasks.lock
