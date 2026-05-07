@@ -24,8 +24,10 @@
       "step": 3,
       "name": "auth",
       "agent": "backend",
-      "status": "pending",
-      "started_at": "2026-05-07T14:53:41+0900"
+      "status": "completed",
+      "started_at": "2026-05-07T14:53:41+0900",
+      "completed_at": "2026-05-07T16:30:00+0900",
+      "summary": "/api/admin/login·refresh·logout·password 핸들러(33196c9) + Auth 미들웨어(claim 무결성+1쿼리 검증) + Must/Role 가드 + 로그인 잠금(5회·15분) + 임시 비번 만료 + 비번 강도 + JWT issuer(stdlib HS256·refresh jti 무효화) + audit 자동 기록(login_*/logout/password_change). reviewer 진단으로 명세-코드 불일치 1건(현재 비번 틀림 → WRONG_CURRENT_PASSWORD)을 7b6376d에서 정정 후 PASS."
     },
     {
       "step": 4,

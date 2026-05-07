@@ -210,7 +210,7 @@ func RequireBranch() gin.HandlerFunc
 
 흐름 (`WithTx`):
 1. `ValidateStrength(new_password)` 실패 → 400 `WEAK_PASSWORD`.
-2. `FindByID(adminID)` → `VerifyPassword(hash, current_password)` 실패 → 401 `UNAUTHORIZED`.
+2. `FindByID(adminID)` → `VerifyPassword(hash, current_password)` 실패 → 401 `WRONG_CURRENT_PASSWORD` (토큰은 valid한 상태에서 폼의 "현재 비번"만 틀린 케이스. 클라이언트가 일반 인증 실패와 분기해 폼 인라인 에러로 표시).
 3. `HashPassword(new_password)` → `UpdatePassword`(hash 갱신 + flags 리셋 + `password_updated_at=now`).
 4. **그 사용자의 모든 refresh 토큰 무효화** = `password_updated_at` 갱신만으로 충족(refresh 검증 시 `iat < password_updated_at`로 차단). 명시적으로 발급된 jti가 클라가 다시 보내올 가능성도 있으니 `revoked_refresh_tokens`에 별도 INSERT는 안 함(jti를 모르므로). access는 동일 모델로 다음 요청에서 401.
 5. audit `password_change`.
