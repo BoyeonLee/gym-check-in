@@ -28,6 +28,11 @@ from pathlib import Path
 # 빈 문자열은 루트 자체(예: 루트의 CLAUDE.md). 정확 매칭은 EXACT_FILES로.
 BACKEND_ALLOWED = ("backend/", "db/")
 FRONTEND_ALLOWED = ("frontend/",)
+# backend/frontend agent가 메인 프로젝트 루트(워크트리 밖)에서 만질 수 있는
+# 경로. step.md 검증 절차상 자식 Claude가 자기 step의 status를 마크해야
+# 하므로 phases/ 인덱스만 좁게 허용. docs/ · backend/(메인) 등은 여전히 차단.
+BACKEND_MAIN_ALLOWED = ("phases/",)
+FRONTEND_MAIN_ALLOWED = ("phases/",)
 SHARED_ALLOWED = (
     "docs/",
     "scripts/",
@@ -70,13 +75,15 @@ def project_root(cwd: str) -> Path:
     return p
 
 
-def normalize_relpath(file_path: str, cwd: str) -> str | None:
+def normalize_relpath(file_path: str, cwd: str) -> tuple[str | None, str | None]:
     """file_path를 agent의 작업 루트 기준 상대 경로로 정규화.
 
-    - backend/frontend agent의 경우 작업 루트는 .worktrees/<agent>/.
-    - shared의 경우 작업 루트는 프로젝트 루트.
+    반환: (relpath, source). source는 "work"(워크트리 작업 루트 기준) 또는
+    "main"(메인 프로젝트 루트 기준). backend/frontend agent는 워크트리가
+    1차 작업 루트지만 phases/ 같은 공유 인덱스를 만지려면 메인 루트
+    fallback이 필요해 두 단계 시도한다. shared는 항상 main.
 
-    상대 경로면 cwd 기준으로 절대로 변환 후 처리. 작업 루트 밖이면 None.
+    상대 경로면 cwd 기준으로 절대로 변환 후 처리. 둘 다 실패하면 (None, None).
     """
     p = Path(file_path)
     if not p.is_absolute():
@@ -87,28 +94,42 @@ def normalize_relpath(file_path: str, cwd: str) -> str | None:
     agent = detect_agent(cwd)
     cwd_parts = Path(cwd).resolve().parts
     if agent in ("backend", "frontend"):
-        # 작업 루트 = .worktrees/<agent>
+        # 1차: 워크트리 작업 루트 기준
         if ".worktrees" not in cwd_parts:
-            return None
+            return None, None
         idx = cwd_parts.index(".worktrees")
         if idx + 2 > len(cwd_parts):
-            return None
+            return None, None
         work_root = Path(*cwd_parts[: idx + 2])
-    else:
-        work_root = project_root(cwd)
+        try:
+            return str(p.relative_to(work_root)).replace(os.sep, "/"), "work"
+        except ValueError:
+            pass
+        # 2차: 메인 프로젝트 루트 기준 (phases/ 인덱스 등 좁은 화이트리스트용)
+        main_root = Path(*cwd_parts[:idx])
+        try:
+            return str(p.relative_to(main_root)).replace(os.sep, "/"), "main"
+        except ValueError:
+            return None, None
 
+    # shared
+    work_root = project_root(cwd)
     try:
-        rel = p.relative_to(work_root)
+        return str(p.relative_to(work_root)).replace(os.sep, "/"), "main"
     except ValueError:
-        return None
-    return str(rel).replace(os.sep, "/")
+        return None, None
 
 
-def is_allowed(agent: str, relpath: str) -> bool:
+def is_allowed(agent: str, relpath: str, source: str) -> bool:
     if agent == "backend":
-        return any(relpath.startswith(prefix) for prefix in BACKEND_ALLOWED)
+        if source == "work":
+            return any(relpath.startswith(prefix) for prefix in BACKEND_ALLOWED)
+        # main
+        return any(relpath.startswith(prefix) for prefix in BACKEND_MAIN_ALLOWED)
     if agent == "frontend":
-        return any(relpath.startswith(prefix) for prefix in FRONTEND_ALLOWED)
+        if source == "work":
+            return any(relpath.startswith(prefix) for prefix in FRONTEND_ALLOWED)
+        return any(relpath.startswith(prefix) for prefix in FRONTEND_MAIN_ALLOWED)
     # shared
     if relpath in SHARED_EXACT:
         return True
@@ -134,7 +155,7 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
 
     cwd = payload.get("cwd") or os.getcwd()
     agent = detect_agent(cwd)
-    rel = normalize_relpath(file_path, cwd)
+    rel, source = normalize_relpath(file_path, cwd)
 
     if rel is None:
         # 작업 루트 밖 — agent 영역을 벗어남
@@ -145,7 +166,7 @@ def main(argv: list[str] | None = None, stdin=None) -> int:
         )
         return 2
 
-    if not is_allowed(agent, rel):
+    if not is_allowed(agent, rel, source):
         print(
             f"BLOCKED: {agent}는 {rel}를 변경할 수 없음 "
             f"(사유: harness.md 공유 파일 정책 — Tier 1.2 매트릭스)",

@@ -96,6 +96,30 @@ class TestBackendWorktree:
         rc, _ = _run(path, cwd)
         assert rc == 2
 
+    def test_allow_main_phases_index(self, fake_project):
+        """backend agent도 메인 phases/<phase>/index.json은 만질 수 있다.
+        자식 Claude가 자기 step의 status를 마크하기 위한 좁은 fallback."""
+        cwd = str(fake_project / ".worktrees" / "backend")
+        (fake_project / "phases" / "phase2-backend-scaffold").mkdir(parents=True, exist_ok=True)
+        path = str(fake_project / "phases" / "phase2-backend-scaffold" / "index.json")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_block_main_docs(self, fake_project):
+        """phases/ fallback이 docs/까지 풀어주면 안 된다."""
+        cwd = str(fake_project / ".worktrees" / "backend")
+        path = str(fake_project / "docs" / "API.md")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
+
+    def test_block_main_backend(self, fake_project):
+        """backend agent가 메인의 backend/ 코드를 만지면 안 된다(워크트리에서 작업)."""
+        cwd = str(fake_project / ".worktrees" / "backend")
+        path = str(fake_project / "backend" / "main.go")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+
 
 # === frontend worktree ===
 
@@ -118,6 +142,20 @@ class TestFrontendWorktree:
         (fake_project / ".worktrees" / "frontend" / "db").mkdir(exist_ok=True)
         (fake_project / ".worktrees" / "frontend" / "db" / "migrations").mkdir(exist_ok=True)
         path = str(fake_project / ".worktrees" / "frontend" / "db" / "migrations" / "x.sql")
+        rc, _ = _run(path, cwd)
+        assert rc == 2
+
+    def test_allow_main_phases_index(self, fake_project):
+        """frontend agent도 메인 phases/<phase>/index.json 만질 수 있다."""
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        (fake_project / "phases" / "phase3-fe").mkdir(parents=True, exist_ok=True)
+        path = str(fake_project / "phases" / "phase3-fe" / "index.json")
+        rc, _ = _run(path, cwd)
+        assert rc == 0
+
+    def test_block_main_docs(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        path = str(fake_project / "docs" / "UI_GUIDE.md")
         rc, _ = _run(path, cwd)
         assert rc == 2
 
