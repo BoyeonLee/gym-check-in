@@ -47,7 +47,20 @@ def _project_root(cwd: str) -> Path:
 
 
 def _phase_step_info(root: Path) -> tuple[str, str, str]:
-    """(phase_dir, step_label, agent) — 첫 pending 우선, 없으면 마지막 completed."""
+    """
+    (phase_dir, step_label, agent) — 진행 중 phase의 첫 pending step 우선.
+
+    동작 원리 (위에서 아래로 평가):
+      1. phases/index.json 순회. phase status='completed'인 phase는 건너뜀
+         (다음 phase로 넘어감 — completed phase의 step을 표시하면 다음 진행을
+         못 보여 줌).
+      2. 진행 중 phase에서 첫 pending step 발견 → 표시 후 종료.
+      3. 진행 중 phase에 pending이 없으면(예: 검토 게이트 패턴으로 일부만
+         pending이고 나머지는 deferred) → 마지막 completed step에 ✓ 표시.
+         (deferred는 무시 — '다음 라운드 대기'이지 마지막 진행 지점이 아님.)
+      4. 모든 phase가 다 끝났으면 마지막 phase의 마지막 step에 ✓ 표시
+         (전체 작업 종료 표시).
+    """
     top = root / "phases" / "index.json"
     if not top.exists():
         return ("", "", "")
@@ -55,6 +68,8 @@ def _phase_step_info(root: Path) -> tuple[str, str, str]:
         idx = json.loads(top.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return ("", "", "")
+
+    last_phase_with_steps: tuple[str, list] | None = None
 
     for ph in idx.get("phases", []):
         d = ph.get("dir")
@@ -68,7 +83,15 @@ def _phase_step_info(root: Path) -> tuple[str, str, str]:
         steps = sub_idx.get("steps", [])
         if not steps:
             continue
+        last_phase_with_steps = (d, steps)
+
+        # phase 단위 status가 completed면 다음 phase로
+        if ph.get("status") == "completed":
+            continue
+
         total = len(steps)
+
+        # 진행 중 phase: 첫 pending step
         for s in steps:
             if s.get("status") == "pending":
                 return (
@@ -76,7 +99,22 @@ def _phase_step_info(root: Path) -> tuple[str, str, str]:
                     f"{s.get('step')}/{total - 1}",
                     AGENT_SHORT.get(s.get("agent", ""), "?"),
                 )
-        # 모두 completed
+
+        # pending 없음 (검토 게이트로 일부만 deferred 등) → 마지막 completed step
+        completed = [s for s in steps if s.get("status") == "completed"]
+        if completed:
+            last = completed[-1]
+            return (
+                d,
+                f"{last.get('step')}/{total - 1}✓",
+                AGENT_SHORT.get(last.get("agent", ""), "?"),
+            )
+        # completed도 없음 (전부 deferred 등) → 다음 phase로
+
+    # 모든 phase 다 봤는데 표시할 게 없음 → 마지막 phase의 마지막 step에 ✓
+    if last_phase_with_steps is not None:
+        d, steps = last_phase_with_steps
+        total = len(steps)
         last = steps[-1]
         return (
             d,

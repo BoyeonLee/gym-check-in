@@ -110,10 +110,15 @@ class TestSessionStart:
 # ===========================================================================
 
 class TestStatusline:
+    @pytest.fixture(autouse=True)
+    def _mock_dashboard(self, monkeypatch):
+        # 환경별로 설치된 claude-dashboard 출력이 stdout 끝에 붙지 않도록 mock.
+        monkeypatch.setattr(sl, "_dashboard_output", lambda payload: "")
+
     def test_branch_only_when_no_phases(self, fake_root, capsys, monkeypatch):
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fake_root))
         with patch.object(sl, "_git_branch", return_value="main"):
-            rc = sl.main()
+            rc = sl.main(stdin=io.StringIO(""))
         assert rc == 0
         out = capsys.readouterr().out.strip()
         assert out == "branch:main"
@@ -131,7 +136,7 @@ class TestStatusline:
         ])
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fake_root))
         with patch.object(sl, "_git_branch", return_value="feat/db"):
-            rc = sl.main()
+            rc = sl.main(stdin=io.StringIO(""))
         out = capsys.readouterr().out.strip()
         assert "phase:1-db" in out
         assert "step:1/1" in out
@@ -150,9 +155,83 @@ class TestStatusline:
         ])
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fake_root))
         with patch.object(sl, "_git_branch", return_value="main"):
-            rc = sl.main()
+            rc = sl.main(stdin=io.StringIO(""))
         out = capsys.readouterr().out.strip()
         assert "✓" in out
+
+    def test_skips_completed_phase_to_next(self, fake_root, capsys, monkeypatch):
+        """phase status='completed'는 건너뛰고 다음 진행 중 phase의 pending step을 표시."""
+        _write_phases(fake_root, [
+            {
+                "dir": "phase1-db-init",
+                "status": "completed",
+                "steps": [
+                    {"step": 1, "name": "migrations", "agent": "backend", "status": "completed"},
+                    {"step": 2, "name": "seed", "agent": "backend", "status": "completed"},
+                ],
+            },
+            {
+                "dir": "phase2-backend-scaffold",
+                "status": "pending",
+                "steps": [
+                    {"step": 1, "name": "scaffold", "agent": "backend", "status": "pending"},
+                    {"step": 2, "name": "middleware", "agent": "backend", "status": "deferred"},
+                ],
+            },
+        ])
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fake_root))
+        with patch.object(sl, "_git_branch", return_value="main"):
+            rc = sl.main(stdin=io.StringIO(""))
+        out = capsys.readouterr().out.strip()
+        assert "phase:phase2-backend-scaffold" in out
+        assert "step:1/1" in out
+        # phase1의 step:2/1✓이 표시되면 안 됨 (이전 버그)
+        assert "phase:phase1-db-init" not in out
+
+    def test_review_gate_shows_last_completed(self, fake_root, capsys, monkeypatch):
+        """검토 게이트 상태: 일부 step만 completed, 나머지 deferred → 마지막 completed에 ✓."""
+        _write_phases(fake_root, [
+            {
+                "dir": "phase2-backend-scaffold",
+                "status": "pending",
+                "steps": [
+                    {"step": 1, "name": "scaffold", "agent": "backend", "status": "completed"},
+                    {"step": 2, "name": "middleware", "agent": "backend", "status": "deferred"},
+                    {"step": 3, "name": "auth", "agent": "backend", "status": "deferred"},
+                ],
+            },
+        ])
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fake_root))
+        with patch.object(sl, "_git_branch", return_value="main"):
+            rc = sl.main(stdin=io.StringIO(""))
+        out = capsys.readouterr().out.strip()
+        assert "phase:phase2-backend-scaffold" in out
+        # 마지막 completed step(step1)에 ✓
+        assert "step:1/2✓" in out
+
+    def test_all_phases_completed_shows_last_phase(self, fake_root, capsys, monkeypatch):
+        """모든 phase가 completed면 마지막 phase의 마지막 step에 ✓."""
+        _write_phases(fake_root, [
+            {
+                "dir": "phase1",
+                "status": "completed",
+                "steps": [{"step": 1, "name": "a", "agent": "backend", "status": "completed"}],
+            },
+            {
+                "dir": "phase2",
+                "status": "completed",
+                "steps": [
+                    {"step": 1, "name": "x", "agent": "backend", "status": "completed"},
+                    {"step": 2, "name": "y", "agent": "backend", "status": "completed"},
+                ],
+            },
+        ])
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fake_root))
+        with patch.object(sl, "_git_branch", return_value="main"):
+            rc = sl.main(stdin=io.StringIO(""))
+        out = capsys.readouterr().out.strip()
+        assert "phase:phase2" in out
+        assert "step:2/1✓" in out
 
 
 # ===========================================================================
