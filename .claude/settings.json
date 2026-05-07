@@ -1,4 +1,11 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(go build *)",
+      "Bash(go vet *)",
+      "Bash(go test *)"
+    ]
+  },
   "statusLine": {
     "type": "command",
     "command": "python3 $CLAUDE_PROJECT_DIR/scripts/hooks/statusline.py"
