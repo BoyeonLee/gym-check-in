@@ -11,6 +11,7 @@ __pycache__/
 # phase execution outputs
 phases/**/phase*-output.json
 phases/**/step*-output.json
+phases/**/step*-review.txt
 
 # git worktrees created by scripts/execute.py
 .worktrees/

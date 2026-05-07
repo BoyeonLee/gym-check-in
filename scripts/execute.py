@@ -549,12 +549,16 @@ class StepExecutor:
         _, body = _parse_frontmatter(raw)
         prompt = preamble + body
 
+        # prompt를 명령 인자로 넘기면 OS ARG_MAX(보통 ~128KB)를 초과해
+        # "Argument list too long"으로 실패한다. stdin으로 파이프해 한도 회피.
+        # claude CLI는 인자 자리의 prompt가 비면 stdin을 읽는다.
         result = subprocess.run(
             [
                 "claude", "-p", "--dangerously-skip-permissions",
                 "--max-turns", str(self.MAX_TURNS),
-                "--output-format", "json", prompt,
+                "--output-format", "json",
             ],
+            input=prompt,
             cwd=cwd or self._root, capture_output=True, text=True,
             timeout=self.TIMEOUT_SEC,
         )
@@ -671,25 +675,43 @@ class StepExecutor:
                     return False, f"acceptance 실패 ({' '.join(cmd)}, cwd={sub_cwd}):\n{tail}"
         return True, ""
 
-    def _run_review(self, cwd: str) -> tuple[bool, str]:
-        """code-reviewer 서브에이전트를 별도 단발 세션으로 호출해 PASS 검증."""
+    def _run_review(self, cwd: str, step_num: Optional[int] = None) -> tuple[bool, str]:
+        """code-reviewer 서브에이전트를 별도 단발 세션으로 호출해 PASS 검증.
+
+        결과(PASS/BLOCK 사유)는 progress_indicator 때문에 stdout buffering으로
+        실시간 추적이 어렵다. step_num이 주어지면 phase_dir에 step{N}-review.txt
+        파일로 전체 응답을 dump해 사후 진단·학습이 가능하게 한다.
+        """
         prompt = (
             "현재 worktree의 변경 사항을 code-reviewer 서브에이전트에 위임해 검증하라. "
             "출력은 PASS 또는 BLOCK으로 시작해야 한다."
         )
         try:
+            # _invoke_claude와 동일한 이유로 prompt는 stdin으로 전달.
             r = subprocess.run(
                 [
                     "claude", "-p", "--dangerously-skip-permissions",
                     "--max-turns", "30",
                     "--output-format", "text",
-                    prompt,
                 ],
+                input=prompt,
                 cwd=cwd, capture_output=True, text=True,
                 timeout=600,
             )
         except subprocess.TimeoutExpired:
+            if step_num is not None:
+                self._dump_review(step_num, "[TIMEOUT]\nreview가 10분 안에 끝나지 않았다.")
             return False, "review 타임아웃 (10분 초과)"
+
+        # 응답 dump — 사후 진단·재시도 시 prev_error로 활용 가능.
+        full_dump = (
+            f"--- exit code ---\n{r.returncode}\n\n"
+            f"--- stdout ---\n{(r.stdout or '').strip()}\n\n"
+            f"--- stderr ---\n{(r.stderr or '').strip()}\n"
+        )
+        if step_num is not None:
+            self._dump_review(step_num, full_dump)
+
         out = (r.stdout or "") + "\n" + (r.stderr or "")
         # PASS / BLOCK 판정
         if re.search(r"\bPASS\b", r.stdout or "", re.MULTILINE):
@@ -699,7 +721,17 @@ class StepExecutor:
         # 명시적 PASS/BLOCK이 없으면 안전하게 실패로 분류
         return False, f"code-reviewer가 PASS/BLOCK을 반환하지 않음:\n{out.strip()[-1500:]}"
 
-    def _post_completion_gate(self, agent: str, cwd: str) -> tuple[str, str]:
+    def _dump_review(self, step_num: int, content: str) -> None:
+        """step별 review 결과를 phase_dir/step{N}-review.txt에 저장(.gitignore 처리)."""
+        try:
+            (self._phase_dir / f"step{step_num}-review.txt").write_text(
+                content, encoding="utf-8"
+            )
+        except OSError as e:
+            print(f"  WARN: review dump 실패: {e}")
+
+    def _post_completion_gate(self, agent: str, cwd: str,
+                               step_num: Optional[int] = None) -> tuple[str, str]:
         """completed 직후 acceptance + review를 실행.
 
         반환:
@@ -713,7 +745,7 @@ class StepExecutor:
                 tool = msg.split(":", 1)[1]
                 return "block", f"필수 도구 미설치: {tool} (acceptance 실행 불가)"
             return "retry", msg
-        ok, msg = self._run_review(cwd)
+        ok, msg = self._run_review(cwd, step_num=step_num)
         if not ok:
             if "claude" in msg and "command not found" in msg.lower():
                 return "block", "code-reviewer 호출 실패: claude CLI를 찾을 수 없음"
@@ -748,7 +780,7 @@ class StepExecutor:
 
             if status == "completed":
                 # post-completion gate: acceptance(lint/build/test) + code-reviewer
-                gate, gate_msg = self._post_completion_gate(agent, cwd)
+                gate, gate_msg = self._post_completion_gate(agent, cwd, step_num=step_num)
                 if gate == "block":
                     for s in index["steps"]:
                         if s["step"] == step_num:

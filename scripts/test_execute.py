@@ -423,8 +423,10 @@ class TestInvokeClaude:
         assert "-p" in cmd
         assert "--dangerously-skip-permissions" in cmd
         assert "--output-format" in cmd
-        assert "PREAMBLE" in cmd[-1]
-        assert "UI를 구현하세요" in cmd[-1]
+        # prompt는 ARG_MAX 회피를 위해 stdin(input=)으로 전달.
+        prompt = mock_run.call_args.kwargs["input"]
+        assert "PREAMBLE" in prompt
+        assert "UI를 구현하세요" in prompt
 
     def test_saves_output_json(self, executor):
         mock_result = MagicMock(returncode=0, stdout='{"ok": true}', stderr="")
@@ -783,7 +785,8 @@ class TestInvokeClaudeMaxTurns:
         mock_result = MagicMock(returncode=0, stdout="{}", stderr="")
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             executor._invoke_claude({"step": 2, "name": "ui"}, "PREAMBLE\n")
-        prompt = mock_run.call_args[0][0][-1]
+        # prompt는 stdin(input=)로 전달됨.
+        prompt = mock_run.call_args.kwargs["input"]
         assert "agent: frontend" not in prompt
         assert "실제 본문" in prompt
         assert "PREAMBLE" in prompt
@@ -882,7 +885,7 @@ class TestEnsureBranchesAndWorktrees:
 class TestPostCompletionGate:
     def test_shared_agent_skips_acceptance(self, executor):
         # shared는 acceptance 생략 — review만 검증되는데 review도 mock
-        executor._run_review = lambda cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
         gate, msg = executor._post_completion_gate("shared", "/tmp")
         assert gate == "pass"
 
@@ -900,7 +903,7 @@ class TestPostCompletionGate:
         # build/test 대상이 없으므로 acceptance를 skip → review만 통과하면 pass.
         (tmp_path / "backend").mkdir()
         executor._which = lambda b: False  # go 미설치여도 skip 경로라 영향 없어야 함
-        executor._run_review = lambda cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
         gate, msg = executor._post_completion_gate("backend", str(tmp_path))
         assert gate == "pass", f"got {gate}: {msg}"
 
@@ -909,7 +912,7 @@ class TestPostCompletionGate:
         (tmp_path / "backend").mkdir()
         (tmp_path / "backend" / "go.mod").write_text("module test\n")
         executor._which = lambda b: True
-        executor._run_review = lambda cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
         with patch("execute.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             gate, msg = executor._post_completion_gate("backend", str(tmp_path))
