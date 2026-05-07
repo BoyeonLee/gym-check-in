@@ -15,7 +15,10 @@
       "step": 2,
       "name": "middleware",
       "agent": "backend",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-05-07T14:14:15+0900",
+      "completed_at": "2026-05-07T15:30:00+0900",
+      "summary": "middleware/{requestid,logger(slog),recovery,cors(204),bodylimit(BODY_TOO_LARGE),ratelimit(RATE_LIMITED),hsts} + WithTx retry(40001/40P01 3회) + audit/{Action enum, Entry, Log} + repo/audit_logs_repo(SQL 분리) + cmd/server 미들웨어 체인. 빌드/통합 테스트 PASS. retry 진단으로 명세-카탈로그 4개 항목 정합화 + preflight_step.py 도입 후 수동 검토 통과."
     },
     {
       "step": 3,
