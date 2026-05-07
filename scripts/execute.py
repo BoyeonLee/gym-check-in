@@ -147,11 +147,45 @@ class StepExecutor:
         self._check_clean_tree()
         self._check_blockers()
         self._validate_step_files()
+        self._run_preflight()
         agents_used = self._collect_agents()
         self._ensure_branches_and_worktrees(agents_used)
         self._ensure_created_at()
         self._execute_all_steps()
         self._finalize()
+
+    def _run_preflight(self):
+        """step.md ↔ docs/API.md 카탈로그 사전 정합성 검증.
+
+        scripts/preflight_step.py를 호출해 step.md에 인용된 에러 코드가
+        API.md 카탈로그에 모두 등록되어 있는지 확인. 누락 시 stderr에
+        명시 + sys.exit(2)로 즉시 종료해 retry 루프에 빠지기 전에 사용자가
+        명세를 정합화하도록 한다.
+
+        스크립트가 없으면(외부 환경 등) 경고만 출력하고 진행 — 게이트는
+        block이 아니라 best-effort.
+        """
+        preflight = ROOT / "scripts" / "preflight_step.py"
+        if not preflight.exists():
+            print("  WARN: scripts/preflight_step.py 없음 — 사전 정합성 검증 건너뜀")
+            return
+        r = subprocess.run(
+            ["python3", str(preflight), str(self._phase_dir)],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            # PASS 줄 한 줄만 짧게 출력.
+            if r.stdout.strip():
+                print(f"  ✓ preflight: {r.stdout.strip().splitlines()[0]}")
+            return
+        # 미등록 코드 발견 또는 사용 오류.
+        print()
+        print("  ✗ preflight 실패 — 명세-카탈로그 불일치 발견:")
+        for line in (r.stderr or "").strip().splitlines():
+            print(f"    {line}")
+        print()
+        print("  해결: docs/API.md에 코드를 추가하거나 step.md에서 등록된 코드로 교체 후 재실행.")
+        sys.exit(2)
 
     def _dry_run_report(self):
         """실제 Claude 호출 없이 실행 계획만 출력."""
@@ -799,9 +833,13 @@ class StepExecutor:
                             s["status"] = "pending"
                             s.pop("error_message", None)
                     self._write_json(self._index_file, index)
+                    review_dump = self._phase_dir / f"step{step_num}-review.txt"
+                    dump_hint = (
+                        f" — review dump: {review_dump.relative_to(ROOT) if review_dump.exists() else '(없음)'}"
+                    )
                     if attempt < self.MAX_RETRIES:
                         prev_error = gate_msg
-                        print(f"  ↻ Step {step_num}: gate 실패 — retry {attempt}/{self.MAX_RETRIES}")
+                        print(f"  ↻ Step {step_num}: gate 실패 — retry {attempt}/{self.MAX_RETRIES}{dump_hint}")
                         continue
                     else:
                         for s in index["steps"]:
@@ -810,6 +848,7 @@ class StepExecutor:
                                 s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 gate 실패] {gate_msg}"
                                 s["failed_at"] = ts
                         self._write_json(self._index_file, index)
+                        print(f"  ✗ Step {step_num}: {step_name} {self.MAX_RETRIES}회 시도 후 gate 실패{dump_hint}")
                         self._commit_step(step_num, step_name, cwd=cwd)
                         print(f"  ✗ Step {step_num}: {step_name} gate failed after {self.MAX_RETRIES} attempts")
                         self._update_top_index("error")
