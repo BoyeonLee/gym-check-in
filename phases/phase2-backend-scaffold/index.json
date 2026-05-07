@@ -33,7 +33,7 @@
       "step": 4,
       "name": "admins-branches",
       "agent": "backend",
-      "status": "deferred"
+      "status": "pending"
     },
     {
       "step": 5,
