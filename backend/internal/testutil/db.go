@@ -28,12 +28,28 @@ var (
 	migrateErr  error
 )
 
+// testIsolationLockKey is a fixed advisory-lock key shared across every
+// package's integration tests. `go test ./...` runs packages in parallel
+// processes that all hit the same TEST_DATABASE_URL, so TruncateAll calls
+// from one package would otherwise wipe rows another package's test just
+// inserted. We acquire this PostgreSQL advisory lock on a dedicated
+// connection for the lifetime of each SetupDB() call, serializing tests
+// across processes. Ordinary `pg_advisory_unlock` releases on cleanup;
+// if the test crashes, the session closes and the lock auto-releases.
+const testIsolationLockKey int64 = 0x67796D5F636B696E // "gym_ckin"
+
 // SetupDB returns a connected *pgxpool.Pool against TEST_DATABASE_URL.
 // On first invocation in a process it applies db/migrations via goose
 // (using the embedded database/sql driver) so tests do not need an
 // external `goose` binary. Each call truncates all tables for isolation.
 //
 // If TEST_DATABASE_URL is not set, the test is skipped.
+//
+// Per-test cross-process serialization: SetupDB holds a PostgreSQL
+// advisory lock on a dedicated connection from t's start through
+// t.Cleanup. While the lock is held, no other test in any process may
+// proceed past its own SetupDB() — this is the only sane way to prevent
+// `go test ./... -tags=integration` from flake-deleting data.
 func SetupDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
@@ -49,13 +65,39 @@ func SetupDB(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("testutil: migrations failed: %v", migrateErr)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	pool, err := repo.NewPool(ctx, dsn)
 	if err != nil {
+		cancel()
 		t.Fatalf("testutil: NewPool: %v", err)
 	}
-	t.Cleanup(pool.Close)
+
+	// Acquire one connection and hold it for the test's lifetime so
+	// pg_advisory_lock survives until cleanup. If the lock acquisition
+	// blocks past the ctx deadline, treat it as a fatal test setup error.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		cancel()
+		pool.Close()
+		t.Fatalf("testutil: acquire conn for advisory lock: %v", err)
+	}
+	if _, err := conn.Exec(ctx, "select pg_advisory_lock($1)", testIsolationLockKey); err != nil {
+		conn.Release()
+		cancel()
+		pool.Close()
+		t.Fatalf("testutil: pg_advisory_lock: %v", err)
+	}
+	cancel()
+
+	t.Cleanup(func() {
+		// Best-effort unlock. Failing to unlock is non-fatal: closing
+		// the connection ends the session and PostgreSQL drops the lock.
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, _ = conn.Exec(releaseCtx, "select pg_advisory_unlock($1)", testIsolationLockKey)
+		releaseCancel()
+		conn.Release()
+		pool.Close()
+	})
 
 	TruncateAll(t, pool)
 	return pool

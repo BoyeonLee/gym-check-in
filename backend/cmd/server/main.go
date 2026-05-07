@@ -1,10 +1,11 @@
 // Command server is the gym-check-in HTTP API entry point.
 //
-// Scaffold scope (phase 2 step 1): only GET /api/healthz is wired. Routing,
-// middleware (auth/audit/CORS/rate-limit/request-id/recovery), and the cron
-// runner are added in subsequent steps. Even at this stage the entry point
-// must already enforce HTTP timeouts and graceful shutdown so future steps
-// inherit the right defaults.
+// At step 2 the server wires the cross-cutting middleware chain (request
+// id → access logger → panic recovery → CORS → body size limit, plus
+// HSTS in prod) and prepares the rate-limited /api/admin group. Auth
+// handlers, member/membership routes, and the cron runner are added in
+// subsequent steps; the entry point keeps HTTP timeouts and graceful
+// shutdown so future steps inherit the right defaults.
 package main
 
 import (
@@ -22,7 +23,16 @@ import (
 
 	"github.com/lboyeon1223/gym-check-in/backend/internal/config"
 	httpapi "github.com/lboyeon1223/gym-check-in/backend/internal/http"
+	"github.com/lboyeon1223/gym-check-in/backend/internal/http/middleware"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/repo"
+	"github.com/lboyeon1223/gym-check-in/backend/internal/util"
+)
+
+// authRateWindow / authRateMax mirror backend/CLAUDE.md's "IP 단위 rate
+// limit (15분당 60회)" applied to authentication routes only.
+const (
+	authRateWindow = 15 * time.Minute
+	authRateMax    = 60
 )
 
 func main() {
@@ -49,8 +59,37 @@ func run() error {
 		return fmt.Errorf("init db pool: %w", err)
 	}
 
+	logger := slog.Default()
+
 	r := gin.New()
+	// Middleware order matters — see internal/http/middleware/requestid.go
+	// for the contract.  Each subsequent layer expects the upstream effects
+	// (e.g. logger needs request_id, recovery wraps everything below it).
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Logger(logger))
+	r.Use(middleware.Recovery(cfg.AppEnv, logger))
+	r.Use(middleware.CORS(cfg.CORSOrigin))
+	r.Use(middleware.BodyLimit(0)) // 1 MiB default
+	r.Use(middleware.HSTS(cfg.AppEnv))
+
+	// Trusted proxies — left empty until ADR-010 picks the hosting platform.
+	// In dev there is no proxy in front of us; in prod we'll register the
+	// platform's internal CIDRs once known.
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return fmt.Errorf("set trusted proxies: %w", err)
+	}
+
+	// Healthz must remain reachable for platform health checks: it sits on
+	// the engine directly so neither rate limit nor (future) auth applies.
 	httpapi.RegisterHealth(r, pool)
+
+	// Authentication route group — rate-limited per source IP. Concrete
+	// /api/admin/login + /api/admin/refresh handlers land in step 3; the
+	// group is wired here so the limiter is shared across them.
+	rl := middleware.NewLimiter(authRateWindow, authRateMax, util.SystemClock{})
+	authGroup := r.Group("/api/admin")
+	authGroup.Use(rl.Middleware())
+	_ = authGroup // referenced by step 3 handlers
 
 	srv := &nethttp.Server{
 		Addr:              ":" + cfg.Port,
