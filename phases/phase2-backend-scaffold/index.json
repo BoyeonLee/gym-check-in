@@ -1,0 +1,14 @@
+{
+  "project": "gym-check-in",
+  "phase": "phase2-backend-scaffold",
+  "steps": [
+    { "step": 1, "name": "scaffold",            "agent": "backend", "status": "pending" },
+    { "step": 2, "name": "middleware",          "agent": "backend", "status": "pending" },
+    { "step": 3, "name": "auth",                "agent": "backend", "status": "pending" },
+    { "step": 4, "name": "admins-branches",     "agent": "backend", "status": "pending" },
+    { "step": 5, "name": "members-kiosk",       "agent": "backend", "status": "pending" },
+    { "step": 6, "name": "memberships",         "agent": "backend", "status": "pending" },
+    { "step": 7, "name": "checkins-sales-bulk", "agent": "backend", "status": "pending" },
+    { "step": 8, "name": "batch-finalize",      "agent": "backend", "status": "pending" }
+  ]
+}
