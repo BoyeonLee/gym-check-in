@@ -217,6 +217,92 @@ func TestAdmins_PatchBranchChangeInvalidatesTokens(t *testing.T) {
 	}
 }
 
+// TestAdmins_PatchUsernameDuplicate — PATCH 시 다른 row와 username 충돌 →
+// 409 USERNAME_DUPLICATE (POST 경로 외 PATCH도 동일 코드 노출).
+func TestAdmins_PatchUsernameDuplicate(t *testing.T) {
+	f := newAdminFixture(t)
+	bid := testutil.CreateBranch(t, f.pool, nil)
+	taken, _ := testutil.CreateAdmin(t, f.pool, &testutil.AdminOpts{
+		Username: "taken-" + t.Name(), Role: "branch", BranchID: &bid,
+	})
+	target, _ := testutil.CreateAdmin(t, f.pool, &testutil.AdminOpts{
+		Username: "movable-" + t.Name(), Role: "branch", BranchID: &bid,
+	})
+	_, access := loginAs(t, f, "global", nil)
+	_ = taken // create only
+
+	rec := postWithAuth(t, f.r, http.MethodPatch,
+		"/api/admins/"+itoa(target), access,
+		map[string]any{"username": "taken-" + t.Name()})
+	if rec.Code != http.StatusConflict || !hasErrorCode(rec.Body.Bytes(), "USERNAME_DUPLICATE") {
+		t.Errorf("expected 409 USERNAME_DUPLICATE, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAdmins_PatchInvalidRoleBranch — PATCH로 role/branch_id 조합을 깨면
+// 400 INVALID_ROLE_BRANCH (POST 검증 경로가 PATCH에서도 동일하게 동작).
+func TestAdmins_PatchInvalidRoleBranch(t *testing.T) {
+	f := newAdminFixture(t)
+	bid := testutil.CreateBranch(t, f.pool, nil)
+	target, _ := testutil.CreateAdmin(t, f.pool, &testutil.AdminOpts{
+		Username: "rbtarget-" + t.Name(), Role: "branch", BranchID: &bid,
+	})
+	_, access := loginAs(t, f, "global", nil)
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		// branch role인데 branch_id를 NULL(생략)로 — global 전환 의도가 없으므로 무효
+		{"branch role + null branch_id 시도", map[string]any{"role": "branch", "branch_id": nil}},
+		// global role + branch_id non-null
+		{"global role + non-null branch_id", map[string]any{"role": "global", "branch_id": bid}},
+		// 알 수 없는 role
+		{"unknown role", map[string]any{"role": "weird"}},
+	}
+	for _, c := range cases {
+		rec := postWithAuth(t, f.r, http.MethodPatch,
+			"/api/admins/"+itoa(target), access, c.body)
+		if rec.Code != http.StatusBadRequest || !hasErrorCode(rec.Body.Bytes(), "INVALID_ROLE_BRANCH") {
+			t.Errorf("%s: expected 400 INVALID_ROLE_BRANCH, got %d %s",
+				c.name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestAdmins_PatchSoftDeletedNotFound — soft-deleted admin에 PATCH 시 404.
+// 미존재와 soft-deleted를 동일 404로 통일하는 보안 모범의 PATCH 경로 검증.
+func TestAdmins_PatchSoftDeletedNotFound(t *testing.T) {
+	f := newAdminFixture(t)
+	bid := testutil.CreateBranch(t, f.pool, nil)
+	target, _ := testutil.CreateAdmin(t, f.pool, &testutil.AdminOpts{
+		Username: "ghost-" + t.Name(), Role: "branch", BranchID: &bid,
+	})
+	_, access := loginAs(t, f, "global", nil)
+
+	// soft-delete via DELETE route.
+	if rec := postWithAuth(t, f.r, http.MethodDelete,
+		"/api/admins/"+itoa(target), access, nil); rec.Code != http.StatusNoContent {
+		t.Fatalf("seed delete: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// PATCH on soft-deleted id → 404 (not 409/200).
+	rec := postWithAuth(t, f.r, http.MethodPatch,
+		"/api/admins/"+itoa(target), access,
+		map[string]any{"username": "renamed-after-delete"})
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 on soft-deleted PATCH, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 미존재 id도 동일 404.
+	rec = postWithAuth(t, f.r, http.MethodPatch,
+		"/api/admins/9999999", access,
+		map[string]any{"username": "ghost"})
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("missing id PATCH expected 404, got %d", rec.Code)
+	}
+}
+
 // TestAdmins_DeleteSelfBlocked — caller can't delete themselves.
 func TestAdmins_DeleteSelfBlocked(t *testing.T) {
 	f := newAdminFixture(t)
