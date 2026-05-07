@@ -300,7 +300,11 @@ func (h *AuthHandlers) PasswordChange(c *gin.Context) {
 			return apperr.New(http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
 		}
 		if err := auth.VerifyPassword(admin.PasswordHash, req.CurrentPassword); err != nil {
-			return apperr.New(http.StatusUnauthorized, "UNAUTHORIZED", "unauthorized")
+			// 비번 변경 폼에서 "현재 비번"만 틀린 케이스. 토큰은 여전히 valid이므로
+			// 클라이언트가 일반 UNAUTHORIZED(토큰 무효)와 분기해 폼 인라인 에러를
+			// 표시할 수 있도록 별도 코드를 사용한다 (docs/API.md line 99·520).
+			return apperr.New(http.StatusUnauthorized, "WRONG_CURRENT_PASSWORD",
+				"현재 비밀번호가 일치하지 않습니다")
 		}
 		newHash, err := auth.HashPassword(req.NewPassword)
 		if err != nil {

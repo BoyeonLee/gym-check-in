@@ -281,8 +281,10 @@ func TestPasswordChange_WrongCurrent(t *testing.T) {
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/admin/password", access, map[string]any{
 		"current_password": "wrong-current", "new_password": "ValidPass123",
 	})
-	if rec.Code != http.StatusUnauthorized || !hasErrorCode(rec.Body.Bytes(), "UNAUTHORIZED") {
-		t.Fatalf("expected 401 UNAUTHORIZED: %d %s", rec.Code, rec.Body.String())
+	// Token이 valid한 상태에서 폼의 "현재 비번"만 틀린 케이스 → 클라이언트가 일반
+	// UNAUTHORIZED(토큰 무효)와 분기해 폼 인라인 에러를 띄울 수 있도록 별도 코드.
+	if rec.Code != http.StatusUnauthorized || !hasErrorCode(rec.Body.Bytes(), "WRONG_CURRENT_PASSWORD") {
+		t.Fatalf("expected 401 WRONG_CURRENT_PASSWORD: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
