@@ -24,7 +24,8 @@
       "step": 3,
       "name": "auth",
       "agent": "backend",
-      "status": "pending"
+      "status": "pending",
+      "started_at": "2026-05-07T14:53:41+0900"
     },
     {
       "step": 4,
