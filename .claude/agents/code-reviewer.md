@@ -42,10 +42,17 @@ tools: Read, Grep, Glob, Bash
 - `frontend/package.json` diff에 ADR 외 라이브러리가 추가됐는지 (React/Vite/TS/Tailwind/TanStack Query/React Router 외 — 외부 STT SDK 절대 금지)
 
 ### D. API 계약(API.md ↔ 코드)
-- `docs/API.md`에 정의된 모든 엔드포인트가 backend 라우터에 등록됐는가? (경로·메서드 일치)
+
+**호출 컨텍스트별 적용 범위**:
+- **step 종료 직후 호출**(execute.py post-completion gate): 점진적 phase 진행 단계라 라우트 전체 등록은 기대하지 않는다. 이 step의 산출물에 한정해 검사한다.
+- **worktree merge 직전·`/review` 슬래시 호출**: 전체 라우트·전체 계약을 대조한다.
+
+검사 항목:
+- (step별 호출) **이 step이 등록한다고 명시한 라우트만** API.md와 경로·메서드가 일치하는가? 입력 prompt에 명시되지 않은 라우트의 미등록은 BLOCK 사유가 아니다(다음 step에서 등록 예정).
+- (merge·review 호출) `docs/API.md`에 정의된 **모든 엔드포인트**가 backend 라우터에 등록됐는가?
 - frontend의 fetch 호출 경로가 API.md에 존재하는가? (오타·미존재 경로 검출)
 - 요청·응답 JSON 필드명·타입이 API.md와 일치하는가? (snake_case ↔ camelCase 혼용 검출)
-- 에러 코드(`ACCOUNT_LOCKED`, `NO_ACTIVE_MEMBERSHIP`, `PHONE_DUPLICATE`, `PAUSE_ALREADY_USED`, `IDEMPOTENCY_KEY_REQUIRED`, `TEMP_PASSWORD_EXPIRED`, `WEAK_PASSWORD` 등)가 카탈로그와 일치하는가?
+- **변경된 코드/명세에서 사용하는 모든 에러 코드**(예: `ACCOUNT_LOCKED`, `NO_ACTIVE_MEMBERSHIP`, `PHONE_DUPLICATE`, `BODY_TOO_LARGE`, `RATE_LIMITED`, `IDEMPOTENCY_KEY_REQUIRED` 등)가 `docs/API.md`의 "에러 코드 카탈로그" 표에 등록돼 있는가? 미등록 코드는 step 호출이든 merge 호출이든 항상 BLOCK 사유.
 
 ### E. 프론트엔드 별도 점검
 - 키오스크 `MemberPick`이 PII(풀 전화·생년월일)를 비마스킹으로 노출하는가?
