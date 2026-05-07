@@ -883,6 +883,19 @@ class StepExecutor:
 
     def _finalize(self):
         index = self._read_json(self._index_file)
+        # 부분 진행 가드: 검토 게이트 패턴(미래 step을 'deferred' 등 비-pending status로 두고
+        # 라운드별로 풀어가는 패턴)을 지원. 모든 step이 완료된 시점에만 phase finalize·merge·
+        # top-index 갱신을 수행한다.
+        all_completed = all(s.get("status") == "completed" for s in index.get("steps", []))
+        if not all_completed:
+            remaining = [
+                f"step{s['step']}({s.get('status', 'pending')})"
+                for s in index.get("steps", [])
+                if s.get("status") != "completed"
+            ]
+            print(f"\n  ⏸ 부분 진행 — phase finalize 보류 (남은 step: {', '.join(remaining)}).")
+            print(f"  남은 step의 status를 'pending'으로 풀고 다시 실행하면 이어집니다.")
+            return
         index["completed_at"] = self._stamp()
         self._write_json(self._index_file, index)
         self._update_top_index("completed")

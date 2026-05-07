@@ -1047,3 +1047,80 @@ class TestDryRun:
         with patch.object(executor, "_check_clean_tree") as mock_check:
             executor.run()
         mock_check.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _finalize — 부분 진행 가드 (검토 게이트 패턴 지원)
+# ---------------------------------------------------------------------------
+
+class TestFinalizePartialProgress:
+    """
+    검토 게이트 패턴: 미래 step을 'deferred' 같은 비-pending status로 두고
+    라운드별로 풀어가는 흐름을 지원한다. _finalize는 모든 step이 completed일 때만
+    merge·top-index 갱신을 수행해야 한다.
+    """
+
+    def _make_index(self, phase_dir, statuses):
+        """statuses: status 문자열 리스트. step 번호는 0부터."""
+        idx = {
+            "project": "TestProject",
+            "phase": "mvp",
+            "steps": [
+                {"step": i, "name": f"s{i}", "status": st}
+                for i, st in enumerate(statuses)
+            ],
+        }
+        (phase_dir / "index.json").write_text(json.dumps(idx, ensure_ascii=False))
+
+    def test_skips_when_some_step_deferred(self, executor, phase_dir, capsys):
+        """deferred가 남아있으면 finalize 동작 보류."""
+        self._make_index(phase_dir, ["completed", "deferred", "deferred"])
+        with patch.object(executor, "_run_git") as mock_git, \
+             patch.object(executor, "_update_top_index") as mock_top:
+            executor._finalize()
+        out = capsys.readouterr().out
+        assert "부분 진행" in out
+        assert "보류" in out
+        # git/top-index 작업 호출 안 됨
+        mock_git.assert_not_called()
+        mock_top.assert_not_called()
+        # phase index에 completed_at 기록 안 됨
+        idx = json.loads((phase_dir / "index.json").read_text())
+        assert "completed_at" not in idx
+
+    def test_skips_when_some_step_pending(self, executor, phase_dir, capsys):
+        """pending이 남아있어도(이론적으로) finalize 보류."""
+        self._make_index(phase_dir, ["completed", "completed", "pending"])
+        with patch.object(executor, "_run_git") as mock_git, \
+             patch.object(executor, "_update_top_index") as mock_top:
+            executor._finalize()
+        out = capsys.readouterr().out
+        assert "부분 진행" in out
+        mock_git.assert_not_called()
+        mock_top.assert_not_called()
+
+    def test_runs_when_all_completed(self, executor, phase_dir, top_index):
+        """모든 step이 completed면 finalize 정상 동작 — completed_at 기록 + top-index 갱신."""
+        self._make_index(phase_dir, ["completed", "completed", "completed"])
+        with patch.object(executor, "_run_git") as mock_git:
+            # git diff/commit/merge는 모두 returncode 0 (또는 적절한 mock)으로
+            mock_git.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            executor._collect_agents = lambda: set()  # worktree merge skip
+            executor._finalize()
+        idx = json.loads((phase_dir / "index.json").read_text())
+        assert "completed_at" in idx
+        # top-level phases/index.json도 completed로 업데이트
+        top = json.loads(top_index.read_text())
+        target = next(p for p in top["phases"] if p["dir"] == "0-mvp")
+        assert target["status"] == "completed"
+
+    def test_remaining_step_listed_in_message(self, executor, phase_dir, capsys):
+        """보류 메시지에 남은 step 번호·status가 표시되어야 운영자가 다음에 뭘 풀지 알 수 있다."""
+        self._make_index(phase_dir, ["completed", "deferred", "pending"])
+        with patch.object(executor, "_run_git"), patch.object(executor, "_update_top_index"):
+            executor._finalize()
+        out = capsys.readouterr().out
+        assert "step1" in out
+        assert "deferred" in out
+        assert "step2" in out
+        assert "pending" in out
