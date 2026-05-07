@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/lboyeon1223/gym-check-in/backend/internal/auth"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/config"
 	httpapi "github.com/lboyeon1223/gym-check-in/backend/internal/http"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/http/middleware"
@@ -83,13 +84,36 @@ func run() error {
 	// the engine directly so neither rate limit nor (future) auth applies.
 	httpapi.RegisterHealth(r, pool)
 
-	// Authentication route group — rate-limited per source IP. Concrete
-	// /api/admin/login + /api/admin/refresh handlers land in step 3; the
-	// group is wired here so the limiter is shared across them.
+	// JWT issuer — both secrets required once auth handlers are wired in.
+	if cfg.JWTAccessSecret == "" || cfg.JWTRefreshSecret == "" {
+		return fmt.Errorf("config: JWT_ACCESS_SECRET / JWT_REFRESH_SECRET required")
+	}
+	issuer := &auth.Issuer{
+		AccessSecret:  []byte(cfg.JWTAccessSecret),
+		RefreshSecret: []byte(cfg.JWTRefreshSecret),
+		Clock:         util.SystemClock{},
+		UUIDGen:       util.SystemUUIDGen{},
+	}
+	authHandlers := &httpapi.AuthHandlers{
+		Pool:   pool,
+		Issuer: issuer,
+		Clock:  util.SystemClock{},
+	}
+
+	// Authentication route group — rate-limited per source IP. login/refresh
+	// are public; logout/password require a valid access token (and bypass
+	// MustChangePasswordGuard so first-login users can complete the change).
 	rl := middleware.NewLimiter(authRateWindow, authRateMax, util.SystemClock{})
-	authGroup := r.Group("/api/admin")
-	authGroup.Use(rl.Middleware())
-	_ = authGroup // referenced by step 3 handlers
+	publicAuth := r.Group("/api/admin")
+	publicAuth.Use(rl.Middleware())
+	publicAuth.POST("/login", authHandlers.Login)
+	publicAuth.POST("/refresh", authHandlers.Refresh)
+
+	protectedAuth := r.Group("/api/admin")
+	protectedAuth.Use(rl.Middleware())
+	protectedAuth.Use(middleware.RequireAuth(issuer, pool))
+	protectedAuth.POST("/logout", authHandlers.Logout)
+	protectedAuth.POST("/password", authHandlers.PasswordChange)
 
 	srv := &nethttp.Server{
 		Addr:              ":" + cfg.Port,
