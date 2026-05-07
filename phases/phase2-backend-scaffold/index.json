@@ -33,10 +33,10 @@
       "step": 4,
       "name": "admins-branches",
       "agent": "backend",
-      "status": "error",
+      "status": "completed",
       "started_at": "2026-05-07T22:38:15+0900",
-      "error_message": "[3회 시도 후 실패] Step did not update status",
-      "failed_at": "2026-05-07T23:10:43+0900"
+      "completed_at": "2026-05-07T23:18:00+0900",
+      "summary": "/api/branches CRUD(사용중 검사 BRANCH_IN_USE) + /api/admins CRUD + reset-password(12자 임시 비번·24h 만료) 추가(925fc45); 본인 self-modify/self-delete/self-reset 차단(CANNOT_MODIFY_SELF_ROLE/CANNOT_DELETE_SELF/CANNOT_RESET_SELF); branch_id 변경 시 password_updated_at 갱신으로 토큰 무효화; audit admin_*·branch_*·password_reset 자동 기록(metadata에 평문 미포함). 자식 Claude가 코드+커밋 작성 후 status update 직전 비정상 종료 → 수동 검토(go vet/build, short race, integration race 모두 PASS) + code-reviewer PASS 후 completed 마크."
     },
     {
       "step": 5,
