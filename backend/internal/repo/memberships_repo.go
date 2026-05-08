@@ -24,7 +24,27 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// BulkExtendConflict is returned by BulkExtend when an UPDATE collides with
+// the memberships_no_period_overlap EXCLUDE constraint (PostgreSQL 23P01).
+// The handler unwraps it to surface `first_conflict_membership_id` in the
+// 409 response while still letting apperr.FromDBError map the underlying
+// pgconn error to MEMBERSHIP_PERIOD_OVERLAP via Unwrap().
+type BulkExtendConflict struct {
+	MembershipID int64
+	Cause        error
+}
+
+// Error renders the conflict for diagnostic logs.
+func (e *BulkExtendConflict) Error() string {
+	return fmt.Sprintf("repo: bulk-extend conflict on membership_id=%d: %v", e.MembershipID, e.Cause)
+}
+
+// Unwrap exposes the underlying pgconn.PgError so apperr.FromDBError still
+// recognises 23P01 in chained error walks.
+func (e *BulkExtendConflict) Unwrap() error { return e.Cause }
 
 // MembershipRow is the in-memory shape of a memberships row. Pointer fields
 // reflect SQL NULL semantics: months only set for 'monthly', remaining only
@@ -233,13 +253,33 @@ type UnpauseInput struct {
 	ActualPauseEnd time.Time
 }
 
-// ApplyUnpause shortens end_date by the unused pause days, clears the pause
-// markers, and flips status back to 'active'. Caller must verify status was
-// 'paused' before calling.
+// ApplyUnpause shortens end_date when the user comes off pause early, clears
+// the pause markers, and flips status back to 'active'. Caller must verify
+// status was 'paused' before calling.
+//
+// Date math (anchored on TestApplyUnpause_ShortensEnd in
+// memberships_repo_test.go and the worked example in backend/CLAUDE.md):
+//
+//	original end_date = 5/30
+//	pause registered  4/1..4/7  → ApplyPause adds (pause_end - pause_start) = 6
+//	                              days, so stored end_date becomes 6/5.
+//	unpause on 4/6 (actual_pause_end=4/6) → final end_date = 5/29.
+//
+// That reduces to (extended_end_date) - (pause_end - pause_start) - (pause_end
+// - actual_pause_end), i.e. undo the planned extension AND subtract the days
+// the member did not actually consume. Equivalently:
+//
+//	final_end = original_end - (pause_end - actual_pause_end)
+//
+// the membership effectively "loses" the unused pause days; ApplyCancelPause
+// (which only undoes the planned extension via `end_date - (pause_end -
+// pause_start)`) keeps the round-trip clean for the never-activated path.
 func ApplyUnpause(ctx context.Context, tx pgx.Tx, in UnpauseInput) error {
 	const stmt = `
 		update memberships
-		set end_date         = end_date - (pause_end_date - $2::date),
+		set end_date         = end_date
+		                       - (pause_end_date - pause_start_date)
+		                       - (pause_end_date - $2::date),
 		    pause_start_date = null,
 		    pause_end_date   = null,
 		    status           = 'active'
@@ -429,6 +469,10 @@ func BulkExtend(ctx context.Context, tx pgx.Tx, in BulkExtendInput) (int, error)
 	`
 	for _, t := range targets {
 		if _, err := tx.Exec(ctx, updStmt, t.id, in.Days, in.Today); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23P01" {
+				return 0, &BulkExtendConflict{MembershipID: t.id, Cause: err}
+			}
 			return 0, fmt.Errorf("repo: bulk-extend update id=%d: %w", t.id, err)
 		}
 	}

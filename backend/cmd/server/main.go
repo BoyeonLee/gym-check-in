@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/lboyeon1223/gym-check-in/backend/internal/auth"
+	"github.com/lboyeon1223/gym-check-in/backend/internal/cache"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/config"
 	httpapi "github.com/lboyeon1223/gym-check-in/backend/internal/http"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/http/middleware"
@@ -31,9 +32,18 @@ import (
 
 // authRateWindow / authRateMax mirror backend/CLAUDE.md's "IP 단위 rate
 // limit (15분당 60회)" applied to authentication routes only.
+//
+// checkinLRUSize / checkinLRUTTL bound the in-process double-click cache for
+// kiosk POST /api/check-ins. 1024 entries cover ≈100 active members per
+// branch × tens of branches with headroom; the 5s TTL is fixed by
+// backend/CLAUDE.md ("이중 클릭 방지(짧은 멱등성)... TTL 5초"). MVP single
+// instance assumption — multi-instance deploy must move this to Redis.
 const (
 	authRateWindow = 15 * time.Minute
 	authRateMax    = 60
+
+	checkinLRUSize = 1024
+	checkinLRUTTL  = 5 * time.Second
 )
 
 func main() {
@@ -122,6 +132,17 @@ func run() error {
 	memberHandlers := &httpapi.MemberHandlers{Pool: pool}
 	kioskHandlers := &httpapi.KioskHandlers{Pool: pool}
 
+	// step 7 — kiosk check-ins (with LRU), admin check-in list, sales summary,
+	// bulk extend. The LRU and the bulk-extend handler share util.SystemClock
+	// so production timing matches the test wiring.
+	checkinHandlers := &httpapi.CheckInHandlers{
+		Pool:  pool,
+		Cache: cache.NewLRU(checkinLRUSize, checkinLRUTTL, util.SystemClock{}),
+		Clock: util.SystemClock{},
+	}
+	salesHandlers := &httpapi.SalesHandlers{Pool: pool}
+	bulkHandlers := &httpapi.BulkExtendHandlers{Pool: pool, Clock: util.SystemClock{}}
+
 	// step 5 — public (kiosk) routes share the same IP rate limit as the
 	// auth group so a hostile client can't DoS the search endpoint either.
 	// GET /api/branches is public because the kiosk needs the list before
@@ -131,6 +152,10 @@ func run() error {
 	publicAPI.GET("/branches", branchHandlers.List)
 	publicAPI.GET("/members/search", kioskHandlers.SearchMembers)
 	publicAPI.GET("/check-ins/today-count", kioskHandlers.TodayCount)
+	// step 7 — kiosk POST /check-ins is unauthenticated (tablet has no
+	// admin session). The double-click LRU + DB SELECT … FOR UPDATE protect
+	// against duplicate rows / concurrent decrement on pass10 quotas.
+	publicAPI.POST("/check-ins", checkinHandlers.Create)
 
 	api := r.Group("/api")
 	api.Use(middleware.RequireAuth(issuer, pool))
@@ -144,6 +169,11 @@ func run() error {
 	api.PATCH("/members/:id", memberHandlers.Update)
 	api.DELETE("/members/:id", memberHandlers.Delete)
 
+	// step 7 — admin check-in history (raw + daily aggregate). Branch
+	// admins are scoped via scopeFromContext; globals optionally filter via
+	// ?branchId=.
+	api.GET("/check-ins", checkinHandlers.List)
+
 	apiGlobal := api.Group("", middleware.RequireGlobal())
 	apiGlobal.POST("/branches", branchHandlers.Create)
 	apiGlobal.PATCH("/branches/:id", branchHandlers.Update)
@@ -153,6 +183,11 @@ func run() error {
 	apiGlobal.PATCH("/admins/:id", adminHandlers.Update)
 	apiGlobal.DELETE("/admins/:id", adminHandlers.Delete)
 	apiGlobal.POST("/admins/:id/reset-password", adminHandlers.ResetPassword)
+	// step 7 — sales summary (gross/refund/net split) and bulk-extend.
+	// Both are gated to role='global' and the bulk-extend handler enforces
+	// Idempotency-Key validation internally.
+	apiGlobal.GET("/sales/summary", salesHandlers.Summary)
+	apiGlobal.POST("/memberships/bulk-extend", bulkHandlers.BulkExtend)
 
 	srv := &nethttp.Server{
 		Addr:              ":" + cfg.Port,

@@ -4,6 +4,7 @@ package repo_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -532,6 +533,20 @@ func TestBulkExtend_ConflictRollsBack(t *testing.T) {
 	}
 	if e2.Format("2006-01-02") != "2026-07-02" {
 		t.Errorf("id2 should not move on conflict, got %s", e2.Format("2006-01-02"))
+	}
+
+	// The handler needs the offending id to render `first_conflict_membership_id`
+	// in the 409 body. BulkExtend wraps the 23P01 in *BulkExtendConflict so
+	// errors.As can recover it; the wrapped cause still satisfies
+	// apperr.FromDBError's pgconn check above.
+	var bec *repo.BulkExtendConflict
+	if !errors.As(err, &bec) {
+		t.Fatalf("expected *repo.BulkExtendConflict in chain, got %T (%v)", err, err)
+	}
+	// The first lock-ordered row is the one whose UPDATE collides — id1
+	// because targets are ORDER BY ms.id ASC.
+	if bec.MembershipID != id1 {
+		t.Errorf("first_conflict_membership_id: want %d, got %d", id1, bec.MembershipID)
 	}
 }
 

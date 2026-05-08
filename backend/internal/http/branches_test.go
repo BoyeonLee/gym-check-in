@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/lboyeon1223/gym-check-in/backend/internal/auth"
+	"github.com/lboyeon1223/gym-check-in/backend/internal/cache"
 	httpapi "github.com/lboyeon1223/gym-check-in/backend/internal/http"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/http/middleware"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/testutil"
@@ -51,6 +52,16 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	adminH := &httpapi.AdminHandlers{Pool: pool}
 	memberH := &httpapi.MemberHandlers{Pool: pool}
 	kioskH := &httpapi.KioskHandlers{Pool: pool}
+	// Step 7 — kiosk POST /check-ins, admin GET /check-ins, sales summary,
+	// bulk-extend. Each handler gets the same FakeClock so KST date math and
+	// the LRU TTL window stay deterministic across the suite.
+	checkinH := &httpapi.CheckInHandlers{
+		Pool:  pool,
+		Cache: cache.NewLRU(64, 5*time.Second, clock),
+		Clock: clock,
+	}
+	salesH := &httpapi.SalesHandlers{Pool: pool}
+	bulkH := &httpapi.BulkExtendHandlers{Pool: pool, Clock: clock}
 
 	r := gin.New()
 	r.Use(middleware.RequestID())
@@ -65,6 +76,9 @@ func newAdminFixture(t *testing.T) *adminFixture {
 		pub.GET("/branches", branchH.List)
 		pub.GET("/members/search", kioskH.SearchMembers)
 		pub.GET("/check-ins/today-count", kioskH.TodayCount)
+		// Kiosk POST is intentionally unauthenticated — the tablet has no
+		// admin session. The 5s LRU + DB lock are the only mutex guarantees.
+		pub.POST("/check-ins", checkinH.Create)
 	}
 
 	priv := r.Group("/api")
@@ -77,6 +91,10 @@ func newAdminFixture(t *testing.T) *adminFixture {
 		priv.PATCH("/members/:id", memberH.Update)
 		priv.DELETE("/members/:id", memberH.Delete)
 
+		// Admin check-in list — branch admins get scopeBranchID via
+		// scopeFromContext; globals can drill down with ?branchId=.
+		priv.GET("/check-ins", checkinH.List)
+
 		g := priv.Group("", middleware.RequireGlobal())
 		g.POST("/branches", branchH.Create)
 		g.PATCH("/branches/:id", branchH.Update)
@@ -87,6 +105,10 @@ func newAdminFixture(t *testing.T) *adminFixture {
 		g.PATCH("/admins/:id", adminH.Update)
 		g.DELETE("/admins/:id", adminH.Delete)
 		g.POST("/admins/:id/reset-password", adminH.ResetPassword)
+
+		// Step 7 globals-only.
+		g.GET("/sales/summary", salesH.Summary)
+		g.POST("/memberships/bulk-extend", bulkH.BulkExtend)
 	}
 
 	return &adminFixture{pool: pool, clock: clock, issuer: issuer, r: r}
