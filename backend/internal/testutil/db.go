@@ -43,7 +43,13 @@ const testIsolationLockKey int64 = 0x67796D5F636B696E // "gym_ckin"
 // (using the embedded database/sql driver) so tests do not need an
 // external `goose` binary. Each call truncates all tables for isolation.
 //
-// If TEST_DATABASE_URL is not set, the test is skipped.
+// If TEST_DATABASE_URL is not set, the test FAILS rather than skips.
+// Skipping was the original behavior but it produced silent false-PASS
+// under harness execution — a child Claude that ran `go test
+// -tags=integration ./...` without sourcing .env would see `[no tests
+// run]` and report success while every integration assertion was
+// quietly bypassed. Hard-fail forces the operator (or supervisor) to
+// fix the env before claiming a pass.
 //
 // Per-test cross-process serialization: SetupDB holds a PostgreSQL
 // advisory lock on a dedicated connection from t's start through
@@ -55,7 +61,7 @@ func SetupDB(t *testing.T) *pgxpool.Pool {
 
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping integration test")
+		t.Fatal("TEST_DATABASE_URL not set; integration tests require it. Source .env (e.g. `set -a; source .env; set +a`) before running `go test -tags=integration`.")
 	}
 
 	migrateOnce.Do(func() {

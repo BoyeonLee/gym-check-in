@@ -22,7 +22,7 @@ func newRouter(t *testing.T) (*gin.Engine, func()) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set")
+		t.Fatal("TEST_DATABASE_URL not set; integration tests require it. Source .env before running `go test -tags=integration`.")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -62,7 +62,7 @@ func TestHealthz_OK(t *testing.T) {
 func TestHealthz_PoolDown(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set")
+		t.Fatal("TEST_DATABASE_URL not set; integration tests require it. Source .env before running `go test -tags=integration`.")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
