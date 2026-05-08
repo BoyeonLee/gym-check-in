@@ -51,7 +51,10 @@
       "step": 6,
       "name": "memberships",
       "agent": "backend",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-05-08T13:19:47+0900",
+      "completed_at": "2026-05-08T13:35:48+0900",
+      "summary": "memberships 라이프사이클(grant/pause/unpause/cancel-pause/refund) + GET memberships/:id(payments+events) + idempotency_keys 인프라(UUIDv4·24h·body hash·conflict) + EXCLUDE → MEMBERSHIP_PERIOD_OVERLAP 변환 + 환불 음수 결제 row 자동 추가."
     },
     {
       "step": 7,
