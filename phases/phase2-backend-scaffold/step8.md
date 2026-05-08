@@ -1,21 +1,21 @@
 ---
 agent: backend
 depends_on: [checkins-sales-bulk]
-summary: "internal/batch(4 트랜잭션 + 정리잡 3종) + cron KST 1 0 * * * + cmd/server batch run-expiry CLI + graceful shutdown 통합(cron→HTTP→DB) + Phase 2 ROADMAP 검증 기준 체크리스트 100% 커버."
+summary: "internal/batch(4 트랜잭션 + 정리잡 3종 + Stats) + scheduler(robfig/cron/v3 KST 1 0 * * *) + cmd/server cron→HTTP→DB graceful shutdown + cmd/server batch run-expiry CLI + 통합 테스트(시계 시뮬 7 시나리오)."
 ---
 
-# Step 8: 자정 KST 배치 + Phase 2 검증 기준 자가 점검
+# Step 8: 자정 KST 배치 + cron + graceful shutdown
 
 ## 목표
 
-회원권 상태 전환과 만료 데이터 정리를 자정 KST에 자동 실행하는 배치를 구현하고, Phase 2 ROADMAP 전체 검증 기준을 체크리스트화해 누락된 테스트를 보완하며 마무리한다.
+회원권 상태 전환과 만료 데이터 정리를 자정 KST에 자동 실행하는 배치를 구현하고, cron 등록·CLI 1회 실행·graceful shutdown 순서를 마무리한다. Phase 2 ROADMAP 검증 기준 자가 점검과 커버리지 측정·누락 테스트 보강은 다음 step(`phase2-acceptance-audit`)에서 처리한다.
 
 산출물:
 - `internal/batch/batch.go` — 4 트랜잭션 + 정리 잡 3종
 - `internal/batch/scheduler.go` — `robfig/cron/v3` KST `1 0 * * *` 등록
 - `cmd/server` — cron 시작/정지를 graceful shutdown에 통합 (cron 1순위 정지)
 - `cmd/server batch run-expiry` — 외부 스케줄러용 1회 실행 모드
-- Phase 2 검증 기준 체크리스트 (`backend/PHASE2_AC.md` 또는 테스트 코멘트 — `docs/`는 shared 영역이므로 backend 내부에 두기) + 누락 테스트 보강
+- 통합 테스트 (시계 시뮬 7 시나리오)
 
 ## 읽어야 할 파일
 
@@ -143,80 +143,6 @@ if len(os.Args) >= 3 && os.Args[1] == "batch" && os.Args[2] == "run-expiry" {
 - revoked_refresh_tokens: 16h 전 삭제, 14h 전 보존
 - admin_audit_logs: 366일 전 삭제, 364일 전 보존
 
-### 5. Phase 2 검증 기준 자가 점검
-
-ROADMAP.md의 "Phase 2 검증 기준" 섹션의 모든 항목을 체크리스트화.
-
-`backend/PHASE2_AC.md` (또는 `internal/testutil/phase2_checklist.go` 데이터로 — shared 영역인 `docs/`에 두지 않는다)에 다음 형식:
-
-```
-- [x] 시드 관리자로 로그인 → access/refresh + must_change_password=true (step3 e2e)
-- [x] access 만료 → refresh로 재발급 → 원 요청 재시도 성공 (step3)
-- [x] 로그아웃 후 같은 refresh로 refresh → 401 (step3)
-- [x] 비번 변경 후 변경 전 refresh 무효 (step3)
-- [x] 5번 비번 틀림 → 6번째 정확해도 401 ACCOUNT_LOCKED, 15분 후 가능 (step3)
-- [x] reset-password 24h 만료 → TEMP_PASSWORD_EXPIRED (step4)
-- [x] 약한 비번 변경 → WEAK_PASSWORD (step3)
-- [x] PATCH branch_id 변경 → 해당 사용자 refresh 무효 (step4)
-- [x] 본인 PATCH role/branch_id 변경 → CANNOT_MODIFY_SELF_ROLE (step4)
-- [x] 지점 관리자 토큰으로 다른 지점 자원 접근 → 404 (step5/6)
-- [x] 지점 관리자가 sales/admins/bulk-extend 접근 → 403 (step4/7)
-- [x] admin_audit_logs 자동 기록 (step3/4)
-- [x] 회원권 부여 amount<=0 → 400, amount>0 → 결제 row 생성 (step6)
-- [x] 환불 후 매출 음수 row 자동 보정 (step6+step7)
-- [x] 키오스크 검색 활성 회원권 없는 회원 제외 (step5)
-- [x] 활성 회원권 없음 → NO_ACTIVE_MEMBERSHIP (step7)
-- [x] paused 회원권 체크인 시도 → 422 (step7)
-- [x] 횟수권 같은 날 두 번 → row 2, remaining 1만 감소 (step7)
-- [x] 횟수권 마지막 → status=expired 같은 트랜잭션 (step7)
-- [x] 같은 회원·지점 5초 내 두 번 체크인 → 같은 응답, row 1개 (step7)
-- [x] 같은 회원권 정지 두 번째 → PAUSE_ALREADY_USED (step6)
-- [x] paused 상태에서 unpause → end_date 단축 (step6)
-- [x] 미래 예약 정지에 cancel-pause → 복원 + pause_used=false (step6)
-- [x] start_date 어제 → INVALID_START_DATE (step6)
-- [x] 키오스크 search 21명 → truncated=true (step5)
-- [x] aggregate=daily 같은 회원 같은 날 1 row, raw 2 row, 92일 초과 RANGE_TOO_LARGE (step7)
-- [x] 사용 중 지점 삭제 → BRANCH_IN_USE (step4)
-- [x] 지점 주소 충돌 → ADDRESS_DUPLICATE (step4)
-- [x] PATCH /api/members/:id에 branch_id 보내도 무시 (step5)
-- [x] bulk-extend 같은 키·같은 body 멱등, 다른 body → CONFLICT (step7)
-- [x] cursor 페이지 정상, limit=200 → INVALID_LIMIT, 잘못된 cursor → INVALID_CURSOR (step5/7)
-- [x] 매출 응답 gross/refund/net 분리 (step7)
-- [x] 자정 배치 수동 실행으로 active→expired/paused→active/active→paused/정리잡 (step8)
-- [x] 회원권 부여 EXCLUDE 위반 → MEMBERSHIP_PERIOD_OVERLAP, 겹치지 않는 미래 통과 (step6)
-- [x] paid_at은 항상 KST today (클라 입력 무시), branch_id 자동 (step6)
-- [x] expired 회원권 환불 → MEMBERSHIP_ALREADY_EXPIRED (step6)
-- [x] pause start_date < memberships.start_date → INVALID_PAUSE_RANGE (step6)
-- [x] pause end_date 연장 결과 미래 회원권과 겹치면 MEMBERSHIP_PERIOD_OVERLAP (step6)
-- [x] bulk-extend가 paused/예약정지 pause_* +days (step7)
-- [x] bulk-extend 충돌 시 first_conflict_membership_id (step7)
-- [x] soft-deleted admin access → 401 즉시 (step3)
-- [x] 다른 지점 회원·회원권 → 404 (step5/6)
-- [x] soft-deleted 회원에 회원권 부여 → 404 (step6)
-- [x] Idempotency-Key UUIDv4 아님 → INVALID_IDEMPOTENCY_KEY (step6)
-- [x] access claim 필수 필드 누락 → 401 (step3)
-- [x] 미래 시작 회원권 체크인 → MEMBERSHIP_NOT_STARTED (step7)
-- [x] 부여·환불 Idempotency-Key 누락 → 400 (step6)
-- [x] bulk-extend days 0/91 → INVALID_EXTEND_DAYS (step7)
-- [x] 모든 응답 +09:00 + X-Request-ID (step2)
-- [x] panic → 500 INTERNAL, stack 미노출 (step2)
-- [x] 동시 체크인 race → 40001/40P01 자동 retry, 다른 하나는 LRU 적중 (step7)
-```
-
-각 항목에 대응하는 테스트 파일·함수명을 옆에 적어 코드 검색 가능하게(예: `// covered: internal/http/admins_auth_test.go:TestLogin_AccountLocked`).
-
-체크리스트를 채우면서 누락된 테스트가 있으면 이 step에서 보강. **이 보강 작업이 step8의 핵심**.
-
-### 6. 커버리지 측정 (참고선)
-
-```bash
-go test -race -coverprofile=coverage.out -tags=integration ./...
-go tool cover -func=coverage.out | tail
-```
-
-- 핸들러 80%, 도메인 90% 목표(절대 기준 아님).
-- 미달 시 누락 케이스를 테스트로 추가.
-
 ## 핵심 규칙 (반드시 박는다)
 
 - **자정 배치 KST 변환**: 모든 SQL은 `(now() AT TIME ZONE 'Asia/Seoul')::date`. `CURRENT_DATE` 금지.
@@ -224,8 +150,6 @@ go tool cover -func=coverage.out | tail
 - **graceful shutdown 순서**: cron → HTTP → DB. 역순으로 하면 진행 중 배치가 풀 닫힌 DB에 접근.
 - **batch CLI도 같은 코드 경로**: cron 트리거 콜백과 `batch run-expiry`가 같은 `RunExpiry(ctx, pool, clock)`를 호출. 코드 분기 두지 마라.
 - **`Clock` 인터페이스 사용**: `time.Now()` 직접 호출 금지(테스트 결정성).
-- **체크리스트는 backend/ 내부에**: `docs/`는 shared 영역이므로 이 step에서 수정 불가. `backend/PHASE2_AC.md` 같은 backend 내부 파일에.
-- **누락 테스트 보강이 핵심**: step1~7에서 빠진 카탈로그 항목을 모두 채운다.
 
 ## Acceptance Criteria
 
@@ -252,10 +176,6 @@ sleep 1
 # (로그 검사는 stdout/stderr 캡처해 grep — 구현 기댓값에 맞춰)
 kill $SERVER_PID
 wait $SERVER_PID 2>/dev/null || true
-
-# 커버리지 기준선 (참고선, 미달이어도 PASS)
-go test -race -tags=integration -coverprofile=/tmp/cov.out ./...
-go tool cover -func=/tmp/cov.out | grep -E '^total:'
 ```
 
 자가 점검 (시계 시뮬 통합 테스트):
@@ -266,15 +186,14 @@ go tool cover -func=/tmp/cov.out | grep -E '^total:'
 ## 작업 마감 절차 (B 방안 — 책임 분리)
 
 1. AC 명령 직접 실행해 빌드/테스트 통과 확인. **commit 전에 모든 테스트가 통과해야 한다.**
-2. **체크리스트 100% 충족 자가 점검**: `backend/PHASE2_AC.md`의 모든 항목에 대응 테스트가 있는지 grep으로 확인. 누락 발견 시 그 step을 다시 보강. (commit 전 단계)
-3. 변경된 코드를 conventional commit으로 worktree(`feat/phase2-backend-scaffold-be`)에 commit. **`phases/`는 절대 만지지 마라** — hook이 차단한다.
-4. **commit 직후 즉시 종료**한다. 다음 행동은 모두 금지:
+2. 변경된 코드를 conventional commit으로 worktree(`feat/phase2-backend-scaffold-be`)에 commit. **`phases/`는 절대 만지지 마라** — hook이 차단한다.
+3. **commit 직후 즉시 종료**한다. 다음 행동은 모두 금지:
    - 추가 도구 호출(테스트 재실행, 파일 재읽기, code-review 시뮬레이션, 추가 commit 등) 금지
    - 마무리 요약·보고 메시지 출력 금지
    - status·summary·timestamp는 박지 마라
 
-   부모 execute.py가 자식 종료 직후 acceptance(go vet/build/test -race)와 code-reviewer를 **다시** 돌린다. 자식이 commit 후 무엇을 더 해도 부모 검증이 항상 최종이라 자식의 추가 작업은 100% 폐기물이다. max-turns 도달의 가장 흔한 원인이 commit 이후의 불필요한 마무리 턴이라 이를 명시적으로 차단한다. **phase2 전체 status도 execute.py가 마지막 step 통과 시 자동으로 `completed`로 마크**한다(top-level `phases/index.json`).
-5. 사용자 개입이 필요한 상황(ADR 갱신, 도구 미설치 등)이면 **commit하지 말고** stdout에 사유 한 단락만 쓰고 종료. execute.py가 retry/error/blocked로 판정한다. 이 경로는 "commit 후 즉시 종료"와 별개다 — commit 자체가 발생하지 않으면 마감 절차 4를 거치지 않는다.
+   부모 execute.py가 자식 종료 직후 acceptance(go vet/build/test -race)와 code-reviewer를 **다시** 돌린다. 자식이 commit 후 무엇을 더 해도 부모 검증이 항상 최종이라 자식의 추가 작업은 100% 폐기물이다. max-turns 도달의 가장 흔한 원인이 commit 이후의 불필요한 마무리 턴이라 이를 명시적으로 차단한다.
+4. 사용자 개입이 필요한 상황(ADR 갱신, 도구 미설치 등)이면 **commit하지 말고** stdout에 사유 한 단락만 쓰고 종료. execute.py가 retry/error/blocked로 판정한다. 이 경로는 "commit 후 즉시 종료"와 별개다 — commit 자체가 발생하지 않으면 마감 절차 3을 거치지 않는다.
 
 ## 금지사항
 
@@ -284,6 +203,6 @@ go tool cover -func=/tmp/cov.out | grep -E '^total:'
 - graceful shutdown에서 DB 풀을 cron보다 먼저 닫지 마라(진행 중 배치 깨짐).
 - ROADMAP/TESTING.md 같은 shared 문서 수정 금지 — 보완 사항이 있으면 별도 shared step으로.
 - ADR 외 라이브러리 추가 금지(robfig/cron/v3는 ADR-008에 명시되어 있어야 함).
-- 체크리스트 항목 누락한 채로 PASS 처리 금지.
 - 정리 잡 보존 기간(24h/15h/1년)을 임의로 조정하지 마라.
 - KST 자정 경계 race를 무시하고 `00:00`에 트리거 등록 금지(`1 0 * * *`로 1분 margin).
+- Phase 2 검증 기준 자가 점검·`backend/PHASE2_AC.md` 작성·커버리지 측정·누락 테스트 보강은 **이 step에서 하지 마라**. 다음 step(`phase2-acceptance-audit`)이 전담한다.
