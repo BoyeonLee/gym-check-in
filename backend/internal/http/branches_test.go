@@ -49,17 +49,33 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	authH := &httpapi.AuthHandlers{Pool: pool, Issuer: issuer, Clock: clock}
 	branchH := &httpapi.BranchHandlers{Pool: pool}
 	adminH := &httpapi.AdminHandlers{Pool: pool}
+	memberH := &httpapi.MemberHandlers{Pool: pool}
+	kioskH := &httpapi.KioskHandlers{Pool: pool}
 
 	r := gin.New()
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Recovery("dev", testLogger()))
 	r.POST("/api/admin/login", authH.Login)
 
+	// Step 5 — public kiosk routes share the same /api prefix as the
+	// authenticated group. GET /api/branches lives here so the kiosk can
+	// initialise without any token.
+	pub := r.Group("/api")
+	{
+		pub.GET("/branches", branchH.List)
+		pub.GET("/members/search", kioskH.SearchMembers)
+		pub.GET("/check-ins/today-count", kioskH.TodayCount)
+	}
+
 	priv := r.Group("/api")
 	priv.Use(middleware.RequireAuth(issuer, pool))
 	priv.Use(middleware.MustChangePasswordGuard())
 	{
-		priv.GET("/branches", branchH.List)
+		priv.GET("/members", memberH.List)
+		priv.GET("/members/:id", memberH.GetByID)
+		priv.POST("/members", memberH.Create)
+		priv.PATCH("/members/:id", memberH.Update)
+		priv.DELETE("/members/:id", memberH.Delete)
 
 		g := priv.Group("", middleware.RequireGlobal())
 		g.POST("/branches", branchH.Create)
@@ -101,11 +117,15 @@ func loginAs(t *testing.T, f *adminFixture, role string, branchID *int64) (int64
 
 // ---------- branches ----------
 
-func TestBranches_ListRequiresAuth(t *testing.T) {
+// TestBranches_ListPublic — step 5 moved GET /api/branches to the public
+// (kiosk-facing) group. A request without any Authorization header must
+// succeed; this test guards against a future regression that re-attaches
+// the auth middleware.
+func TestBranches_ListPublic(t *testing.T) {
 	f := newAdminFixture(t)
 	rec := postWithAuth(t, f.r, http.MethodGet, "/api/branches", "", nil)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

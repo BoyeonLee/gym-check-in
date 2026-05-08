@@ -193,8 +193,9 @@ func TestAdmins_PatchBranchChangeInvalidatesTokens(t *testing.T) {
 	mustDecode(t, rec, &resp)
 	victimAccess := resp.AccessToken
 
-	// Old token works pre-patch.
-	pre := postWithAuth(t, f.r, http.MethodGet, "/api/branches", victimAccess, nil)
+	// Old token works pre-patch. Use /api/members which still requires auth
+	// (step 5 moved /api/branches to the public/kiosk group).
+	pre := postWithAuth(t, f.r, http.MethodGet, "/api/members", victimAccess, nil)
 	if pre.Code != http.StatusOK {
 		t.Fatalf("victim pre-patch GET expected 200, got %d %s", pre.Code, pre.Body.String())
 	}
@@ -211,7 +212,7 @@ func TestAdmins_PatchBranchChangeInvalidatesTokens(t *testing.T) {
 	}
 
 	// Old token must now be 401.
-	post := postWithAuth(t, f.r, http.MethodGet, "/api/branches", victimAccess, nil)
+	post := postWithAuth(t, f.r, http.MethodGet, "/api/members", victimAccess, nil)
 	if post.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 after branch_id flip, got %d %s", post.Code, post.Body.String())
 	}

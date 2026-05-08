@@ -116,15 +116,33 @@ func run() error {
 	protectedAuth.POST("/password", authHandlers.PasswordChange)
 
 	// step 4 — admin/branches CRUD. Authenticated + must_change_password gate;
-	// mutation routes additionally require role='global'. GET /api/branches is
-	// open to both roles so a branch admin can render their own branch info.
+	// mutation routes additionally require role='global'.
 	branchHandlers := &httpapi.BranchHandlers{Pool: pool}
 	adminHandlers := &httpapi.AdminHandlers{Pool: pool}
+	memberHandlers := &httpapi.MemberHandlers{Pool: pool}
+	kioskHandlers := &httpapi.KioskHandlers{Pool: pool}
+
+	// step 5 — public (kiosk) routes share the same IP rate limit as the
+	// auth group so a hostile client can't DoS the search endpoint either.
+	// GET /api/branches is public because the kiosk needs the list before
+	// any admin has logged in (initial 지점 선택 화면).
+	publicAPI := r.Group("/api")
+	publicAPI.Use(rl.Middleware())
+	publicAPI.GET("/branches", branchHandlers.List)
+	publicAPI.GET("/members/search", kioskHandlers.SearchMembers)
+	publicAPI.GET("/check-ins/today-count", kioskHandlers.TodayCount)
 
 	api := r.Group("/api")
 	api.Use(middleware.RequireAuth(issuer, pool))
 	api.Use(middleware.MustChangePasswordGuard())
-	api.GET("/branches", branchHandlers.List)
+
+	// Member CRUD: branch admins are scoped to their own branch via
+	// scopeFromContext inside the handlers; globals see everything.
+	api.GET("/members", memberHandlers.List)
+	api.GET("/members/:id", memberHandlers.GetByID)
+	api.POST("/members", memberHandlers.Create)
+	api.PATCH("/members/:id", memberHandlers.Update)
+	api.DELETE("/members/:id", memberHandlers.Delete)
 
 	apiGlobal := api.Group("", middleware.RequireGlobal())
 	apiGlobal.POST("/branches", branchHandlers.Create)
