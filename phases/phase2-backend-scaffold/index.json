@@ -60,7 +60,7 @@
       "step": 7,
       "name": "checkins-sales-bulk",
       "agent": "backend",
-      "status": "deferred"
+      "status": "pending"
     },
     {
       "step": 8,
