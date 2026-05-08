@@ -85,15 +85,15 @@ func TestKiosk_SearchExcludesInactive(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Results []struct {
+		Items []struct {
 			ID int64 `json:"id"`
-		} `json:"results"`
+		} `json:"items"`
 	}
 	mustDecode(t, rec, &resp)
-	if len(resp.Results) != 1 || resp.Results[0].ID != idA {
-		t.Errorf("expected exactly one hit (id=%d), got %+v", idA, resp.Results)
+	if len(resp.Items) != 1 || resp.Items[0].ID != idA {
+		t.Errorf("expected exactly one hit (id=%d), got %+v", idA, resp.Items)
 	}
-	for _, h := range resp.Results {
+	for _, h := range resp.Items {
 		if h.ID == idB {
 			t.Errorf("inactive member %d should be excluded", idB)
 		}
@@ -115,11 +115,11 @@ func TestKiosk_SearchInvalidInput(t *testing.T) {
 		},
 		{"phone 3자리",
 			"/api/members/search?branchId=" + itoa(bid) + "&mode=phone&q=123",
-			"INVALID_INPUT",
+			"INVALID_PHONE_QUERY",
 		},
 		{"memberId non-numeric",
 			"/api/members/search?branchId=" + itoa(bid) + "&mode=memberId&q=abc",
-			"INVALID_INPUT",
+			"INVALID_MEMBER_ID",
 		},
 		{"unknown mode",
 			"/api/members/search?branchId=" + itoa(bid) + "&mode=other&q=hi",

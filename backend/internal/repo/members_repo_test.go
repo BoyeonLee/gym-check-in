@@ -189,7 +189,7 @@ func TestMembers_Search_NamePrefixActiveOnly(t *testing.T) {
 	_ = testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid, Name: "김현수"})
 
 	hits, truncated, err := repo.SearchMembers(ctx, pool, repo.SearchInput{
-		BranchID: bid, Mode: "name", Q: "김", Today: time.Now().UTC(),
+		BranchID: bid, Mode: "name", Q: "김",
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -224,7 +224,7 @@ func TestMembers_Search_PhoneAndMemberId(t *testing.T) {
 	})
 
 	hits, _, err := repo.SearchMembers(ctx, pool, repo.SearchInput{
-		BranchID: bid, Mode: "phone", Q: "1234", Today: time.Now().UTC(),
+		BranchID: bid, Mode: "phone", Q: "1234",
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -234,7 +234,7 @@ func TestMembers_Search_PhoneAndMemberId(t *testing.T) {
 	}
 
 	hits, _, err = repo.SearchMembers(ctx, pool, repo.SearchInput{
-		BranchID: bid, Mode: "memberId", Q: itoaInt64(id), Today: time.Now().UTC(),
+		BranchID: bid, Mode: "memberId", Q: itoaInt64(id),
 	})
 	if err != nil {
 		t.Fatalf("search memberId: %v", err)
@@ -262,7 +262,7 @@ func TestMembers_Search_Truncated(t *testing.T) {
 	}
 
 	hits, truncated, err := repo.SearchMembers(ctx, pool, repo.SearchInput{
-		BranchID: bid, Mode: "name", Q: "프", Today: time.Now().UTC(),
+		BranchID: bid, Mode: "name", Q: "프",
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)
@@ -294,7 +294,7 @@ func TestMembers_Search_NameLikeEscape(t *testing.T) {
 	})
 
 	hits, _, err := repo.SearchMembers(ctx, pool, repo.SearchInput{
-		BranchID: bid, Mode: "name", Q: "a%", Today: time.Now().UTC(),
+		BranchID: bid, Mode: "name", Q: "a%",
 	})
 	if err != nil {
 		t.Fatalf("search: %v", err)

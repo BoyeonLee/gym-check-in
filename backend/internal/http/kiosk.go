@@ -31,9 +31,9 @@ type KioskHandlers struct {
 }
 
 // kioskSearchHit is the trimmed wire shape — note the absence of any field
-// that could carry full phone or full birth_date. The order of fields in
-// the response (results) is the canonical "most recent check-in first"
-// ordering; clients MUST NOT re-sort because we never expose the sort key.
+// that could carry full phone or full birth_date. The order of items in the
+// response is the canonical "most recent check-in first" ordering; clients
+// MUST NOT re-sort because we never expose the sort key.
 type kioskSearchHit struct {
 	ID              int64  `json:"id"`
 	Name            string `json:"name"`
@@ -69,13 +69,13 @@ func (h *KioskHandlers) SearchMembers(c *gin.Context) {
 		}
 	case "phone":
 		if len(q) != 4 || !isAllDigits(q) {
-			writeError(c, apperr.New(http.StatusBadRequest, "INVALID_INPUT",
+			writeError(c, apperr.New(http.StatusBadRequest, "INVALID_PHONE_QUERY",
 				"phone query must be exactly 4 digits"))
 			return
 		}
 	case "memberId":
 		if _, err := strconv.ParseInt(q, 10, 64); err != nil {
-			writeError(c, apperr.New(http.StatusBadRequest, "INVALID_INPUT",
+			writeError(c, apperr.New(http.StatusBadRequest, "INVALID_MEMBER_ID",
 				"memberId must be numeric"))
 			return
 		}
@@ -88,7 +88,6 @@ func (h *KioskHandlers) SearchMembers(c *gin.Context) {
 		BranchID: branchID,
 		Mode:     mode,
 		Q:        q,
-		Today:    util.SystemClock{}.Now().UTC(),
 	})
 	if err != nil {
 		writeError(c, apperr.New(http.StatusInternalServerError, "INTERNAL", "internal server error"))
@@ -113,7 +112,7 @@ func (h *KioskHandlers) SearchMembers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"results":   out,
+		"items":     out,
 		"truncated": truncated,
 	})
 }

@@ -277,12 +277,14 @@ func ListMembers(ctx context.Context, q Querier, in ListMembersInput) ([]MemberR
 
 // SearchInput configures the kiosk-facing search. Mode is "name" | "phone" |
 // "memberId"; the handler validates each before reaching here. Today is the
-// KST-of-today date used to gate active memberships.
+// SearchInput drives the kiosk search. The "active membership" gate uses
+// KST today computed inside SQL (`(now() AT TIME ZONE 'Asia/Seoul')::date`),
+// so callers don't pass a clock — this matches the project rule that DB
+// session timezone is UTC and KST conversion must be explicit.
 type SearchInput struct {
 	BranchID int64
 	Mode     string
 	Q        string
-	Today    time.Time
 }
 
 // SearchHit is the trimmed-down kiosk row. The repo returns Phone (full)
@@ -303,7 +305,7 @@ type SearchHit struct {
 func SearchMembers(ctx context.Context, q Querier, in SearchInput) ([]SearchHit, bool, error) {
 	const limit = 20
 
-	args := []any{in.BranchID, in.Today}
+	args := []any{in.BranchID}
 	var modeCond string
 	switch in.Mode {
 	case "name":
@@ -311,18 +313,21 @@ func SearchMembers(ctx context.Context, q Querier, in SearchInput) ([]SearchHit,
 		// can't match every row or DoS the index. The third argument tells
 		// PostgreSQL the escape character.
 		args = append(args, escapeLike(in.Q)+"%")
-		modeCond = "m.name like $3 escape '\\'"
+		modeCond = "m.name like $2 escape '\\'"
 	case "phone":
 		args = append(args, in.Q)
-		modeCond = "m.phone_last4 = $3"
+		modeCond = "m.phone_last4 = $2"
 	case "memberId":
 		args = append(args, in.Q)
-		modeCond = "m.id = $3::bigint"
+		modeCond = "m.id = $2::bigint"
 	default:
 		return nil, false, fmt.Errorf("repo: search members: unknown mode %q", in.Mode)
 	}
 	args = append(args, limit+1)
 
+	// Active-membership gate uses KST today computed in SQL — the pool pins
+	// the session timezone to UTC, so the explicit `AT TIME ZONE 'Asia/Seoul'`
+	// is required for the comparison to be correct around KST midnight.
 	stmt := `
 		select m.id, m.name, m.phone, m.birth_date,
 		       (select max(checked_in_at) from check_ins ci where ci.member_id = m.id) as last_ci
@@ -334,11 +339,11 @@ func SearchMembers(ctx context.Context, q Querier, in SearchInput) ([]SearchHit,
 		      select 1 from memberships ms
 		      where ms.member_id = m.id
 		        and ms.status = 'active'
-		        and ms.start_date <= $2
-		        and ms.end_date   >= $2
+		        and ms.start_date <= (now() at time zone 'Asia/Seoul')::date
+		        and ms.end_date   >= (now() at time zone 'Asia/Seoul')::date
 		  )
 		order by last_ci desc nulls last, m.id asc
-		limit $4
+		limit $3
 	`
 	rows, err := q.Query(ctx, stmt, args...)
 	if err != nil {
