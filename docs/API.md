@@ -521,7 +521,9 @@ KST 기준 오늘 해당 지점 체크인 row 수: `WHERE branch_id = ? AND (che
 | `MUST_CHANGE_PASSWORD` | 403 | 강제 변경 화면 외 라우트 차단 |
 | `FORBIDDEN` | 403 | 권한 없음(예: branch가 global 라우트 호출) |
 | `RATE_LIMITED` | 429 | IP 단위 rate limit 초과 |
+| `BODY_TOO_LARGE` | 400 | 요청 본문이 1MB 초과 (gin.MaxBytesReader가 reader 단계에서 차단) |
 | `WEAK_PASSWORD` | 400 | 비번 8자 미만 또는 영문/숫자 미혼합 |
+| `INVALID_INPUT` | 400 | 일반 요청 검증 실패(전용 코드가 카탈로그에 없는 경우의 fallback). 가능하면 도메인 전용 코드를 우선 사용 |
 | `INVALID_PHONE` | 400 | 전화번호가 11자리 숫자 아님 |
 | `INVALID_PHONE_QUERY` | 400 | 키오스크 전화 검색이 4자리 아님 |
 | `INVALID_MEMBER_ID` | 400 | 회원 번호 검색이 숫자 아님 |
@@ -545,6 +547,7 @@ KST 기준 오늘 해당 지점 체크인 row 수: `WHERE branch_id = ? AND (che
 | `BRANCH_IN_USE` | 409 | 지점에 활성 회원/관리자 존재해 삭제 불가 |
 | `CANNOT_DELETE_SELF` | 409 | 본인 관리자 계정 삭제 시도 |
 | `CANNOT_MODIFY_SELF_ROLE` | 409 | 본인 계정의 role/branch_id 변경 시도 |
+| `CANNOT_RESET_SELF` | 409 | 관리자가 자기 자신의 reset-password 호출 시도 (전역 단일 운영 안전망) |
 | `MEMBERSHIP_PERIOD_OVERLAP` | 409 | 회원권 부여·정지·bulk-extend 결과가 기존 active/paused 회원권과 기간 겹침 |
 | `MEMBERSHIP_ALREADY_EXPIRED` | 409 | expired 회원권에 환불 시도 (refunded는 IDEMPOTENCY_KEY_CONFLICT 또는 일반 409) |
 | `PAUSE_ALREADY_USED` | 409 | 회원권당 정지 1회 제한 위반 |
