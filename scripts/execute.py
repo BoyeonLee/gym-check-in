@@ -684,6 +684,32 @@ class StepExecutor:
         r = subprocess.run(["which", binary], capture_output=True, text=True)
         return r.returncode == 0 and bool(r.stdout.strip())
 
+    def _load_dotenv(self) -> dict:
+        """프로젝트 루트의 `.env`를 dict로 파싱.
+
+        존재하지 않으면 빈 dict. acceptance subprocess의 env를 보강해
+        TEST_DATABASE_URL 미설정으로 통합 test가 t.Skip되는 false PASS를 차단.
+        TEST_DATABASE_URL이 비어있고 DATABASE_URL이 있으면 그 값을 fallback.
+        """
+        path = Path(self._root) / ".env"
+        if not path.exists():
+            return {}
+        env: dict = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            v = v.strip()
+            if (v.startswith('"') and v.endswith('"')) or (
+                v.startswith("'") and v.endswith("'")
+            ):
+                v = v[1:-1]
+            env[k.strip()] = v
+        if not env.get("TEST_DATABASE_URL") and env.get("DATABASE_URL"):
+            env["TEST_DATABASE_URL"] = env["DATABASE_URL"]
+        return env
+
     def _run_acceptance(self, agent: str, cwd: str) -> tuple[bool, str]:
         """agent별 lint/build/test 명령을 실제로 실행. (passed, message) 반환.
 
@@ -701,6 +727,14 @@ class StepExecutor:
         else:  # shared
             return True, ""
 
+        # `.env`(루트)를 셸 export 없이도 acceptance subprocess에 주입한다.
+        # 이 가드가 없으면 TEST_DATABASE_URL이 셸에 없을 때 통합 test가 t.Skip
+        # → `[no tests run]`만 보고되어 false PASS로 분류되는 함정이 있다(2026-05
+        # step5/6/7에서 실측됨). os.environ을 base로 두고 .env로 override해
+        # CI(외부 export)도 깨지지 않게 한다.
+        dotenv = self._load_dotenv()
+        proc_env = {**os.environ, **dotenv}
+
         for a in agents_to_run:
             sub_cwd = str(Path(cwd) / a) if (Path(cwd) / a).is_dir() else cwd
             manifest = Path(sub_cwd) / self.ACCEPTANCE_MANIFEST[a]
@@ -711,7 +745,9 @@ class StepExecutor:
             if not self._which(primary):
                 return False, f"TOOL_MISSING:{primary}"
             for cmd in cmds:
-                r = subprocess.run(cmd, cwd=sub_cwd, capture_output=True, text=True)
+                r = subprocess.run(
+                    cmd, cwd=sub_cwd, capture_output=True, text=True, env=proc_env
+                )
                 if r.returncode != 0:
                     tail = (r.stdout + r.stderr).strip()[-1500:]
                     return False, f"acceptance 실패 ({' '.join(cmd)}, cwd={sub_cwd}):\n{tail}"
