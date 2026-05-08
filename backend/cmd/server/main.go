@@ -6,10 +6,22 @@
 // handlers, member/membership routes, and the cron runner are added in
 // subsequent steps; the entry point keeps HTTP timeouts and graceful
 // shutdown so future steps inherit the right defaults.
+//
+// Step 8 adds:
+//   - in-process cron (KST "1 0 * * *") that calls batch.RunExpiry once
+//     per day for membership state transitions and bookkeeping cleanup.
+//   - one-shot CLI mode `./bin/server batch run-expiry` that runs the
+//     same RunExpiry and prints stats as JSON. External schedulers
+//     (systemd timer, k8s CronJob …) call this when out-of-process
+//     scheduling is preferred.
+//   - graceful shutdown order updated to: cron → HTTP → DB pool, so a
+//     batch in-flight at SIGTERM finishes before the pool closes
+//     (otherwise the open transaction would error out mid-flight).
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,6 +34,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/lboyeon1223/gym-check-in/backend/internal/auth"
+	"github.com/lboyeon1223/gym-check-in/backend/internal/batch"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/cache"
 	"github.com/lboyeon1223/gym-check-in/backend/internal/config"
 	httpapi "github.com/lboyeon1223/gym-check-in/backend/internal/http"
@@ -38,19 +51,67 @@ import (
 // branch × tens of branches with headroom; the 5s TTL is fixed by
 // backend/CLAUDE.md ("이중 클릭 방지(짧은 멱등성)... TTL 5초"). MVP single
 // instance assumption — multi-instance deploy must move this to Redis.
+//
+// batchCronSpec is the standard 5-field cron expression for KST 00:01.
+// The 1-minute margin past midnight follows backend/CLAUDE.md to avoid
+// the 00:00 boundary race against straggler check-in transactions.
+//
+// batchRunTimeout caps a single batch invocation. Five minutes covers a
+// realistic worst case (membership table O(10⁵) + cleanup deletes); a
+// runaway run will be cut and slog'd as an error so the next-day run
+// can attempt again.
 const (
 	authRateWindow = 15 * time.Minute
 	authRateMax    = 60
 
 	checkinLRUSize = 1024
 	checkinLRUTTL  = 5 * time.Second
+
+	batchCronSpec   = "1 0 * * *"
+	batchRunTimeout = 5 * time.Minute
 )
 
 func main() {
+	// CLI mode: `./bin/server batch run-expiry`. Run a single RunExpiry,
+	// print stats as JSON, and exit. Same code path as the cron callback
+	// so behaviour can never diverge between scheduled and manual runs.
+	if len(os.Args) >= 3 && os.Args[1] == "batch" && os.Args[2] == "run-expiry" {
+		if err := runBatchCLI(); err != nil {
+			fmt.Fprintln(os.Stderr, "batch run-expiry:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		slog.Error("server exited with error", "error", err.Error())
 		os.Exit(1)
 	}
+}
+
+// runBatchCLI loads config, opens a short-lived pool, runs RunExpiry once
+// and writes the resulting Stats as one JSON line on stdout. External
+// schedulers consume this output for monitoring.
+func runBatchCLI() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), batchRunTimeout)
+	defer cancel()
+	pool, err := repo.NewPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("init db pool: %w", err)
+	}
+	defer pool.Close()
+
+	stats, runErr := batch.RunExpiry(ctx, pool, util.SystemClock{})
+	out, err := json.Marshal(stats)
+	if err != nil {
+		return fmt.Errorf("marshal stats: %w", err)
+	}
+	fmt.Println(string(out))
+	return runErr
 }
 
 func run() error {
@@ -189,6 +250,25 @@ func run() error {
 	apiGlobal.GET("/sales/summary", salesHandlers.Summary)
 	apiGlobal.POST("/memberships/bulk-extend", bulkHandlers.BulkExtend)
 
+	// In-process cron: KST 00:01 daily batch.RunExpiry. Registered before
+	// the HTTP listener so a fast SIGTERM during startup still sees the
+	// scheduler in the shutdown path. The job's own ctx has a hard
+	// timeout (batchRunTimeout) — the cron's wait-for-running-jobs loop
+	// at Stop() therefore cannot block shutdown indefinitely.
+	sched := batch.NewScheduler(util.KST)
+	if err := sched.Register(batchCronSpec, func() {
+		jobCtx, jobCancel := context.WithTimeout(context.Background(), batchRunTimeout)
+		defer jobCancel()
+		if _, err := batch.RunExpiry(jobCtx, pool, util.SystemClock{}); err != nil {
+			slog.Error("batch.run failed", "error", err.Error())
+		}
+	}); err != nil {
+		pool.Close()
+		return fmt.Errorf("register cron: %w", err)
+	}
+	sched.Start()
+	slog.Info("cron.registered", "spec", batchCronSpec, "timezone", util.KST.String(), "entries", sched.EntryCount())
+
 	srv := &nethttp.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           r,
@@ -214,17 +294,25 @@ func run() error {
 
 	select {
 	case err := <-serveErr:
-		// Listener died on its own — clean up the pool and surface the error.
+		// Listener died on its own — clean up cron + pool and surface the error.
+		sched.Stop()
 		pool.Close()
 		return err
 	case sig := <-stopCh:
 		slog.Info("shutdown signal received", "signal", sig.String())
 	}
 
-	// Graceful shutdown: stop accepting new connections, wait up to 30s for
-	// in-flight requests, then close the DB pool. Cron is registered ahead
-	// of the HTTP server in later steps and must stop first; this scaffold
-	// has no cron yet so steps (1) → (2) → (3) collapse into HTTP → DB.
+	// Graceful shutdown order — fixed by backend/CLAUDE.md:
+	//   1. cron stops accepting new triggers and waits for in-flight jobs
+	//      so a running batch finishes cleanly while the DB pool is alive.
+	//   2. HTTP server stops accepting new connections and waits up to
+	//      30s for in-flight requests.
+	//   3. DB pool closes.
+	// Reversing 1↔3 means a batch in flight at SIGTERM would lose its
+	// connections mid-transaction — exactly what graceful shutdown is
+	// supposed to prevent.
+	sched.Stop()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
