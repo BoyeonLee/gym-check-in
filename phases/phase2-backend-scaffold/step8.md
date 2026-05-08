@@ -1,6 +1,7 @@
 ---
 agent: backend
 depends_on: [checkins-sales-bulk]
+summary: "internal/batch(4 트랜잭션 + 정리잡 3종) + cron KST 1 0 * * * + cmd/server batch run-expiry CLI + graceful shutdown 통합(cron→HTTP→DB) + Phase 2 ROADMAP 검증 기준 체크리스트 100% 커버."
 ---
 
 # Step 8: 자정 KST 배치 + Phase 2 검증 기준 자가 점검
@@ -262,14 +263,13 @@ go tool cover -func=/tmp/cov.out | grep -E '^total:'
 - 정리 잡 3종 카운트 일치
 - 외부 CLI `batch run-expiry`가 같은 결과 반환
 
-## 검증 절차
+## 작업 마감 절차 (B 방안 — 책임 분리)
 
-1. AC 명령 직접 실행.
-2. **체크리스트 100% 충족 검증**: `backend/PHASE2_AC.md`의 모든 항목에 대응 테스트가 있는지 grep으로 확인.
-3. `code-reviewer` 서브에이전트 호출. 입력: 단계 이름(`phase2-backend-scaffold/batch-finalize`), `git diff HEAD --stat`. PASS 응답 필요.
-4. step8 status 업데이트:
-   - PASS → `"status": "completed"` + `"summary": "internal/batch(4 트랜잭션 + 정리잡 3종) + cron KST 1 0 * * * + cmd/server batch run-expiry CLI + graceful shutdown 통합(cron→HTTP→DB) + Phase 2 ROADMAP 검증 기준 체크리스트 100% 커버."`
-5. **phase2-backend-scaffold 전체 완료**: phases/index.json의 phase2 status를 `"completed"`로 업데이트하고 `completed_at` 자동 기록은 execute.py에 맡긴다.
+1. AC 명령 직접 실행해 빌드/테스트 통과 확인.
+2. **체크리스트 100% 충족 자가 점검**: `backend/PHASE2_AC.md`의 모든 항목에 대응 테스트가 있는지 grep으로 확인. 누락 발견 시 그 step을 다시 보강.
+3. 변경된 코드를 conventional commit으로 worktree(`feat/phase2-backend-scaffold-be`)에 commit. **`phases/`는 절대 만지지 마라** — hook이 차단한다.
+4. status·summary·timestamp는 박지 마라. execute.py가 acceptance + code-reviewer gate 통과 시 main 인덱스에 frontmatter `summary`를 직접 박는다. **phase2 전체 status도 execute.py가 마지막 step 통과 시 자동으로 `completed`로 마크**(top-level `phases/index.json`).
+5. 사용자 개입이 필요한 상황이면 commit하지 말고 stdout에 사유를 쓰고 종료.
 
 ## 금지사항
 

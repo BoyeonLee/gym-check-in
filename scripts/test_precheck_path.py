@@ -96,14 +96,29 @@ class TestBackendWorktree:
         rc, _ = _run(path, cwd)
         assert rc == 2
 
-    def test_allow_main_phases_index(self, fake_project):
-        """backend agent도 메인 phases/<phase>/index.json은 만질 수 있다.
-        자식 Claude가 자기 step의 status를 마크하기 위한 좁은 fallback."""
+    def test_block_main_phases_index(self, fake_project):
+        """B 방안(2026-05-08): backend agent는 메인 phases/도 만질 수 없다.
+        status·summary는 execute.py가 main에서 직접 박는 책임 분리."""
         cwd = str(fake_project / ".worktrees" / "backend")
         (fake_project / "phases" / "phase2-backend-scaffold").mkdir(parents=True, exist_ok=True)
         path = str(fake_project / "phases" / "phase2-backend-scaffold" / "index.json")
-        rc, _ = _run(path, cwd)
-        assert rc == 0
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
+
+    def test_block_worktree_phases(self, fake_project):
+        """B 방안: 자식이 자기 worktree 안의 phases/도 만지면 안 된다.
+        BACKEND_ALLOWED는 backend/+db/만이라 자동 차단된다."""
+        cwd = str(fake_project / ".worktrees" / "backend")
+        (fake_project / ".worktrees" / "backend" / "phases" / "phase2-backend-scaffold").mkdir(
+            parents=True, exist_ok=True
+        )
+        path = str(
+            fake_project / ".worktrees" / "backend" / "phases" / "phase2-backend-scaffold" / "index.json"
+        )
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
 
     def test_block_main_docs(self, fake_project):
         """phases/ fallback이 docs/까지 풀어주면 안 된다."""
@@ -145,13 +160,22 @@ class TestFrontendWorktree:
         rc, _ = _run(path, cwd)
         assert rc == 2
 
-    def test_allow_main_phases_index(self, fake_project):
-        """frontend agent도 메인 phases/<phase>/index.json 만질 수 있다."""
+    def test_block_main_phases_index(self, fake_project):
+        """B 방안: frontend agent도 메인 phases/ 차단."""
         cwd = str(fake_project / ".worktrees" / "frontend")
         (fake_project / "phases" / "phase3-fe").mkdir(parents=True, exist_ok=True)
         path = str(fake_project / "phases" / "phase3-fe" / "index.json")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+        assert "BLOCKED" in stderr
+
+    def test_block_worktree_phases(self, fake_project):
+        """B 방안: frontend worktree 안의 phases/도 자동 차단(FRONTEND_ALLOWED는 frontend/만)."""
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        (fake_project / ".worktrees" / "frontend" / "phases").mkdir(exist_ok=True)
+        path = str(fake_project / ".worktrees" / "frontend" / "phases" / "x.json")
         rc, _ = _run(path, cwd)
-        assert rc == 0
+        assert rc == 2
 
     def test_block_main_docs(self, fake_project):
         cwd = str(fake_project / ".worktrees" / "frontend")

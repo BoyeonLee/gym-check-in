@@ -1,6 +1,7 @@
 ---
 agent: backend
 depends_on: [members-kiosk]
+summary: "memberships 라이프사이클(grant/pause/unpause/cancel-pause/refund) + GET memberships/:id(payments+events) + idempotency_keys 인프라(UUIDv4·24h·body hash·conflict) + EXCLUDE → MEMBERSHIP_PERIOD_OVERLAP 변환 + 환불 음수 결제 row 자동 추가."
 ---
 
 # Step 6: 회원권 라이프사이클 (부여·정지·환불) + idempotency_keys 인프라
@@ -359,12 +360,12 @@ go test -race -tags=integration ./...
 - expired 환불 시도 → 409
 - pause 등록으로 end_date가 미래 회원권과 겹치면 409 (롤백 — 미래 회원권은 그대로)
 
-## 검증 절차
+## 작업 마감 절차 (B 방안 — 책임 분리)
 
-1. AC 명령 직접 실행.
-2. `code-reviewer` 서브에이전트 호출. 입력: 단계 이름(`phase2-backend-scaffold/memberships`), `git diff HEAD --stat`. PASS 응답 필요.
-3. step6 status 업데이트:
-   - PASS → `"status": "completed"` + `"summary": "memberships 라이프사이클(grant/pause/unpause/cancel-pause/refund) + GET memberships/:id(payments+events) + idempotency_keys 인프라(UUIDv4·24h·body hash·conflict) + EXCLUDE → MEMBERSHIP_PERIOD_OVERLAP 변환 + 환불 음수 결제 row 자동 추가."`
+1. AC 명령 직접 실행해 빌드/테스트 통과 확인.
+2. 변경된 코드를 conventional commit으로 worktree(`feat/phase2-backend-scaffold-be`)에 commit. **`phases/`는 절대 만지지 마라** — hook이 차단한다.
+3. status·summary·timestamp는 박지 마라. execute.py가 acceptance(go vet/build/test) + code-reviewer gate 통과 시 main 인덱스에 frontmatter `summary`를 직접 박는다.
+4. 사용자 개입이 필요한 상황(ADR 갱신, 도구 미설치 등)이면 commit하지 말고 stdout에 사유를 쓰고 종료. execute.py가 retry/error/blocked로 판정한다.
 
 ## 금지사항
 

@@ -4,12 +4,16 @@ PreToolUse Edit/Write 경로 제약 hook.
 
 cwd로 현재 위치를 식별해 worktree boundary와 shared 정책을 강제한다.
 
-매트릭스:
-- .worktrees/backend/  → backend/**, db/**            (그 외 차단)
-- .worktrees/frontend/ → frontend/**                  (그 외 차단)
+매트릭스 (B 방안 — 책임 분리):
+- .worktrees/backend/  → backend/**, db/**             (phases/ 포함 그 외 차단)
+- .worktrees/frontend/ → frontend/**                   (phases/ 포함 그 외 차단)
 - 메인 디렉토리(shared) → docs/**, scripts/**, .claude/**,
                           루트 CLAUDE.md, .env.example, docker-compose.yml,
-                          .gitignore, phases/**       (그 외 차단)
+                          .gitignore, phases/**        (그 외 차단)
+
+자식 Claude(backend/frontend agent)는 phases/ 메타를 만질 수 없다 —
+status·summary·timestamp는 execute.py가 main 인덱스에 직접 박는다(B 방안,
+acceptance + code-reviewer gate 결과 기준).
 
 표준 입력으로 hook payload(JSON)가 들어온다:
     { "tool_input": { "file_path": "..." }, "cwd": "...", ... }
@@ -29,10 +33,13 @@ from pathlib import Path
 BACKEND_ALLOWED = ("backend/", "db/")
 FRONTEND_ALLOWED = ("frontend/",)
 # backend/frontend agent가 메인 프로젝트 루트(워크트리 밖)에서 만질 수 있는
-# 경로. step.md 검증 절차상 자식 Claude가 자기 step의 status를 마크해야
-# 하므로 phases/ 인덱스만 좁게 허용. docs/ · backend/(메인) 등은 여전히 차단.
-BACKEND_MAIN_ALLOWED = ("phases/",)
-FRONTEND_MAIN_ALLOWED = ("phases/",)
+# 경로. B 방안(책임 분리, 2026-05-08) 이후로 자식 Claude는 phases/ 메타를
+# 만지지 않는다 — status·summary는 execute.py가 acceptance + code-reviewer
+# gate 결과로 main 인덱스에 직접 기록한다. 자식이 옛 패턴으로 phases를
+# 만지려 해도 hook이 차단해 자가 교정으로 유도. 또한 worktree 안의
+# phases/도 BACKEND_ALLOWED/FRONTEND_ALLOWED에 없으므로 자동 차단된다.
+BACKEND_MAIN_ALLOWED: tuple[str, ...] = ()
+FRONTEND_MAIN_ALLOWED: tuple[str, ...] = ()
 SHARED_ALLOWED = (
     "docs/",
     "scripts/",

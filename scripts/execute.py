@@ -786,14 +786,40 @@ class StepExecutor:
             return "retry", msg
         return "pass", ""
 
+    def _read_step_summary(self, step_num: int) -> str:
+        """step.md frontmatter에서 summary 값을 읽는다.
+
+        B 방안(책임 분리): 자식 Claude는 main worktree의 phases/ 인덱스에 status·
+        summary를 박지 않는다. 대신 step 작성자가 step.md frontmatter의
+        `summary:` 필드에 산출물 한 줄을 미리 적어두면, gate 통과 시 execute.py가
+        그 값을 main 인덱스에 기록한다.
+        """
+        step_file = self._phase_dir / f"step{step_num}.md"
+        if not step_file.exists():
+            return ""
+        meta, _ = _parse_frontmatter(step_file.read_text(encoding="utf-8"))
+        s = meta.get("summary", "")
+        return s.strip() if isinstance(s, str) else ""
+
     def _execute_single_step(self, step: dict) -> bool:
-        """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 False."""
+        """단일 step 실행 (재시도 포함). 완료되면 True, 실패/차단이면 False.
+
+        ## 동작 (B 방안 — 책임 분리)
+        - 자식 Claude의 책임: 코드 작성 + 테스트 + commit. 끝.
+        - status 결정 책임은 execute.py — 자식이 박은 status는 무시한다.
+          (worktree 안의 phases 인덱스 commit은 main worktree에 보이지 않아
+          예전 코드는 max-turns 사고 시 영원히 retry로 빠졌다.)
+        - 단 자식이 명시적으로 `blocked`로 박은 경우는 인간 개입 신호로 존중.
+        - status는 acceptance + code-reviewer gate 결과로 직접 main에 박는다.
+        - summary는 step.md frontmatter `summary:` 필드에서 읽는다.
+        """
         step_num, step_name = step["step"], step["name"]
         agent = self._agent_for_step(step)
         cwd = self._cwd_for_step(agent)
         guardrails = self._load_guardrails(agent)
         done = sum(1 for s in self._read_json(self._index_file)["steps"] if s["status"] == "completed")
         prev_error = None
+        declared_summary = self._read_step_summary(step_num)
 
         for attempt in range(1, self.MAX_RETRIES + 1):
             index = self._read_json(self._index_file)
@@ -808,97 +834,88 @@ class StepExecutor:
                 self._invoke_claude(step, preamble, cwd=cwd, agent=agent)
                 elapsed = int(pi.elapsed)
 
-            index = self._read_json(self._index_file)
-            status = next((s.get("status", "pending") for s in index["steps"] if s["step"] == step_num), "pending")
             ts = self._stamp()
+            index = self._read_json(self._index_file)
 
-            if status == "completed":
-                # post-completion gate: acceptance(lint/build/test) + code-reviewer
-                gate, gate_msg = self._post_completion_gate(agent, cwd, step_num=step_num)
-                if gate == "block":
-                    for s in index["steps"]:
-                        if s["step"] == step_num:
-                            s["status"] = "blocked"
-                            s["blocked_reason"] = gate_msg
-                            s["blocked_at"] = ts
-                    self._write_json(self._index_file, index)
-                    print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
-                    print(f"    Reason: {gate_msg}")
-                    self._update_top_index("blocked")
-                    sys.exit(2)
-                if gate == "retry":
-                    # status를 다시 pending으로 되돌리고 에러를 다음 시도에 전달
-                    for s in index["steps"]:
-                        if s["step"] == step_num:
-                            s["status"] = "pending"
-                            s.pop("error_message", None)
-                    self._write_json(self._index_file, index)
-                    review_dump = self._phase_dir / f"step{step_num}-review.txt"
-                    dump_hint = (
-                        f" — review dump: {review_dump.relative_to(ROOT) if review_dump.exists() else '(없음)'}"
-                    )
-                    if attempt < self.MAX_RETRIES:
-                        prev_error = gate_msg
-                        print(f"  ↻ Step {step_num}: gate 실패 — retry {attempt}/{self.MAX_RETRIES}{dump_hint}")
-                        continue
-                    else:
-                        for s in index["steps"]:
-                            if s["step"] == step_num:
-                                s["status"] = "error"
-                                s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 gate 실패] {gate_msg}"
-                                s["failed_at"] = ts
-                        self._write_json(self._index_file, index)
-                        print(f"  ✗ Step {step_num}: {step_name} {self.MAX_RETRIES}회 시도 후 gate 실패{dump_hint}")
-                        self._commit_step(step_num, step_name, cwd=cwd)
-                        print(f"  ✗ Step {step_num}: {step_name} gate failed after {self.MAX_RETRIES} attempts")
-                        self._update_top_index("error")
-                        sys.exit(1)
-
-                # gate == "pass"
-                for s in index["steps"]:
-                    if s["step"] == step_num:
-                        s["completed_at"] = ts
-                self._write_json(self._index_file, index)
-                self._commit_step(step_num, step_name, cwd=cwd)
-                print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s, {agent}]")
-                return True
-
-            if status == "blocked":
+            # 자식이 명시적으로 status를 'blocked'로 박은 경우만 그대로 존중한다.
+            # (인간 개입 신호: API 키 부재, ADR 갱신 필요 등.) 자식은 일반적으로
+            # main 인덱스에 쓸 수 없지만 — 만약 sync 사고로 박혔거나 메인 세션에서
+            # 미리 두었다면 무시하지 말고 종료한다.
+            cur_status = next(
+                (s.get("status", "pending") for s in index["steps"] if s["step"] == step_num),
+                "pending",
+            )
+            if cur_status == "blocked":
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["blocked_at"] = ts
                 self._write_json(self._index_file, index)
-                reason = next((s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num), "")
+                reason = next(
+                    (s.get("blocked_reason", "") for s in index["steps"] if s["step"] == step_num),
+                    "",
+                )
                 print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
                 print(f"    Reason: {reason}")
                 self._update_top_index("blocked")
                 sys.exit(2)
 
-            err_msg = next(
-                (s.get("error_message", "Step did not update status") for s in index["steps"] if s["step"] == step_num),
-                "Step did not update status",
-            )
+            # acceptance(빌드/테스트) + code-reviewer gate.
+            # 자식이 정상 종료(exit 0) 했어도 빌드 깨지거나 reviewer BLOCK이면 retry.
+            # 자식이 비정상 종료(max-turns 등) 했어도 코드 commit이 살아 있으면 PASS 가능.
+            gate, gate_msg = self._post_completion_gate(agent, cwd, step_num=step_num)
 
+            if gate == "block":
+                for s in index["steps"]:
+                    if s["step"] == step_num:
+                        s["status"] = "blocked"
+                        s["blocked_reason"] = gate_msg
+                        s["blocked_at"] = ts
+                self._write_json(self._index_file, index)
+                print(f"  ⏸ Step {step_num}: {step_name} blocked [{elapsed}s]")
+                print(f"    Reason: {gate_msg}")
+                self._update_top_index("blocked")
+                sys.exit(2)
+
+            if gate == "pass":
+                for s in index["steps"]:
+                    if s["step"] == step_num:
+                        s["status"] = "completed"
+                        s["completed_at"] = ts
+                        if declared_summary and not s.get("summary"):
+                            s["summary"] = declared_summary
+                        s.pop("error_message", None)
+                        s.pop("blocked_reason", None)
+                self._write_json(self._index_file, index)
+                self._commit_step(step_num, step_name, cwd=cwd)
+                print(f"  ✓ Step {step_num}: {step_name} [{elapsed}s, {agent}]")
+                return True
+
+            # gate == "retry"
+            review_dump = self._phase_dir / f"step{step_num}-review.txt"
+            dump_hint = (
+                f" — review dump: {review_dump.relative_to(ROOT) if review_dump.exists() else '(없음)'}"
+            )
             if attempt < self.MAX_RETRIES:
                 for s in index["steps"]:
                     if s["step"] == step_num:
                         s["status"] = "pending"
                         s.pop("error_message", None)
                 self._write_json(self._index_file, index)
-                prev_error = err_msg
-                print(f"  ↻ Step {step_num}: retry {attempt}/{self.MAX_RETRIES} — {err_msg}")
-            else:
-                for s in index["steps"]:
-                    if s["step"] == step_num:
-                        s["status"] = "error"
-                        s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 실패] {err_msg}"
-                        s["failed_at"] = ts
-                self._write_json(self._index_file, index)
-                self._commit_step(step_num, step_name, cwd=cwd)
-                print(f"  ✗ Step {step_num}: {step_name} failed after {self.MAX_RETRIES} attempts [{elapsed}s]")
-                print(f"    Error: {err_msg}")
-                self._update_top_index("error")
-                sys.exit(1)
+                prev_error = gate_msg
+                print(f"  ↻ Step {step_num}: gate 실패 — retry {attempt}/{self.MAX_RETRIES}{dump_hint}")
+                continue
+
+            for s in index["steps"]:
+                if s["step"] == step_num:
+                    s["status"] = "error"
+                    s["error_message"] = f"[{self.MAX_RETRIES}회 시도 후 gate 실패] {gate_msg}"
+                    s["failed_at"] = ts
+            self._write_json(self._index_file, index)
+            print(f"  ✗ Step {step_num}: {step_name} {self.MAX_RETRIES}회 시도 후 gate 실패{dump_hint}")
+            self._commit_step(step_num, step_name, cwd=cwd)
+            print(f"  ✗ Step {step_num}: {step_name} gate failed after {self.MAX_RETRIES} attempts")
+            self._update_top_index("error")
+            sys.exit(1)
 
         return False  # unreachable
 

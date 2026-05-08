@@ -90,15 +90,15 @@
 - `status`: 초기값 `"pending"`. execute.py가 전이 관리.
 - `parallel_group` *(선택)*: 같은 정수 값을 갖는 인접 step들은 worktree에서 동시 실행된다. 일반적으로 BE step과 FE step을 짝지을 때 사용.
 
-상태 전이와 자동 기록 필드:
+상태 전이와 자동 기록 필드 (책임 분리 — 자식 Claude는 phases 인덱스를 만지지 않는다):
 
 | 전이 | 기록 필드 | 기록 주체 |
 |------|-----------|-----------|
-| → `completed` | `completed_at`, `summary` | Claude 세션(summary), execute.py(timestamp) |
-| → `error` | `failed_at`, `error_message` | Claude 세션(message), execute.py(timestamp) |
-| → `blocked` | `blocked_at`, `blocked_reason` | Claude 세션(reason), execute.py(timestamp) |
+| → `completed` | `completed_at`, `summary` | execute.py 전부 (acceptance + code-reviewer PASS 후 자동) |
+| → `error` | `failed_at`, `error_message` | execute.py 전부 (3회 재시도 후 gate 실패 시) |
+| → `blocked` | `blocked_at`, `blocked_reason` | execute.py 전부 (도구 미설치 등) — 메인 세션이 사전에 `blocked`로 두었다면 존중 |
 
-`summary`는 다음 step 프롬프트에 컨텍스트로 누적 전달된다. 산출물(생성·수정 파일·핵심 결정)이 한 줄에 들어가도록.
+`summary`는 다음 step 프롬프트에 컨텍스트로 누적 전달된다. **step 작성자가 step.md frontmatter `summary:` 필드에 산출물 한 줄을 미리 적어두면 execute.py가 PASS 시점에 main 인덱스에 기록한다.** 자식 Claude는 status·summary를 절대 박지 않는다(자식은 worktree 안에서 commit하지만 main worktree의 phases 인덱스는 그 worktree 브랜치와 독립이라 보이지 않으며, 옛 코드는 max-turns 사고 시 영원히 retry 폭주에 빠졌다).
 
 `created_at`/`started_at`은 execute.py가 자동 기록(생성 시 넣지 말 것).
 
@@ -110,6 +110,7 @@ step 파일 첫 줄에 frontmatter를 둔다(없으면 `agent: shared`로 처리
 ---
 agent: backend
 depends_on: [step0]   # 선택: 같은 phase 안의 다른 step name
+summary: "<산출물·핵심 결정 한 줄. execute.py가 PASS 시 main 인덱스에 기록>"
 ---
 
 # Step {N}: {이름}
@@ -137,21 +138,20 @@ depends_on: [step0]   # 선택: 같은 phase 안의 다른 step name
 - frontend: `cd frontend && pnpm lint && pnpm build && pnpm test`
 - DB 변경: `goose -dir db/migrations postgres "$DATABASE_URL" up && down && up`
 
-## 검증 절차
+## 작업 마감 절차 (자식 Claude 책임)
 
-1. 위 AC 명령을 직접 실행한다.
-2. **`code-reviewer` 서브에이전트를 Task tool로 호출해 변경 사항을 검증받는다**. 입력: 작업 중인 step 이름, `git diff HEAD --stat` 결과. PASS 응답이 나와야만 다음 단계로.
-3. 결과에 따라 `phases/{task-name}/index.json`의 해당 step status를 업데이트:
-   - PASS → `"status": "completed"` + `"summary": "<산출물 한 줄>"`
-   - 3회 재시도 후에도 실패 → `"status": "error"` + `"error_message"`
-   - 사용자 개입 필요(API 키, 인증, 수동 설정, 도구 미설치 등) → `"status": "blocked"` + `"blocked_reason"` 후 즉시 중단
+1. 위 AC 명령을 직접 실행해 통과 확인.
+2. **변경된 코드를 conventional commit으로 worktree에 commit**한다. 이게 자식의 마지막 산출물이다.
+3. **`phases/` 디렉토리는 절대 만지지 않는다** — `index.json` 수정·commit 금지. status·summary·timestamp는 execute.py가 main 인덱스에 직접 박는다 (acceptance + code-reviewer gate 통과 후).
+4. 사용자 개입이 필요하면(API 키, ADR 갱신 필요 등) 작업을 commit하지 말고 stdout에 사유를 명시하고 종료. execute.py가 gate 통과 여부로 retry vs error를 판정한다.
 
 ## 금지사항
 
 - 다른 worktree의 책임 영역 침범 금지(backend step은 `frontend/` 변경 금지, 그 반대도)
 - 공유 파일(`docs/`, `.env.example`, `docker-compose.yml`, 루트 `CLAUDE.md`, `.gitignore`, `scripts/`, `.claude/`) 변경 금지 — shared step이 처리한다
+- **`phases/**` 변경·commit 금지** — hook이 차단함. 모든 step 메타는 execute.py가 main에서 박는다.
 - 기존 테스트를 깨뜨리지 마라
-- ADR 외 라이브러리 추가 금지 — 추가가 정말 필요하면 step을 `blocked`로 두고 사용자와 ADR 갱신 합의
+- ADR 외 라이브러리 추가 금지 — 추가가 정말 필요하면 작업을 멈추고 사용자에게 보고(commit 없이 종료 → execute.py가 retry → 사용자가 수동 개입)
 ```
 
 `agent: both`인 step은 본문에 `## Backend 작업`과 `## Frontend 작업` 두 섹션을 두고, execute.py가 두 worktree에서 같은 step.md를 동시 실행한다.
@@ -171,10 +171,12 @@ execute.py가 자동으로 처리하는 것:
 - **agent별 가드레일 슬림화**: 시스템 프롬프트에 agent 책임 영역에 해당하는 docs만 주입(루트 + 모듈 CLAUDE.md + 관련 docs).
 - **컨텍스트 누적**: 완료된 step의 `summary`를 다음 step 프롬프트에 전달.
 - **frontmatter 검증**: 실행 시작 시 모든 step.md의 `agent`/`depends_on`/`parallel_group`을 검증. 위반 시 즉시 종료.
-- **post-completion gate**: step이 `completed`로 바뀌어도 곧바로 통과 처리하지 않는다. 다음을 자동 실행하고 모두 통과해야 진짜 통과:
+- **post-completion gate (책임 분리, B 방안)**: 자식 Claude의 status update에 의존하지 않는다 — 자식이 종료한 시점에 execute.py가 직접 다음을 실행해 status를 결정한다:
   - **acceptance 명령**: agent에 따라 `go build && go test -race`(backend) / `pnpm lint && pnpm build && pnpm test --run`(frontend)을 직접 실행.
   - **code-reviewer 호출**: 별도 `claude -p`로 `/review` 위임 → `PASS` 응답이 와야 통과.
-  - 둘 중 하나라도 실패하면 status를 다시 `pending`으로 되돌리고 재시도(최대 3회). 도구 미설치(`go`/`pnpm`/`claude`)는 즉시 `blocked`.
+  - 둘 다 PASS면 main 인덱스에 `status: "completed"` + frontmatter `summary` + `completed_at` 자동 기록.
+  - 둘 중 하나라도 실패하면 main 인덱스의 status를 `pending`으로 되돌리고 재시도(최대 3회). 도구 미설치(`go`/`pnpm`/`claude`)는 즉시 `blocked`.
+  - 자식이 max-turns에 도달해 status를 못 박아도 무관 — 코드 commit이 살아 있고 acceptance가 통과하면 PASS.
 - **자가 교정**: 실패 시 최대 3회 재시도. 이전 에러 메시지를 프롬프트에 피드백.
 - **2단계 커밋**: 코드 변경(`feat`)과 메타데이터(`chore`) 분리.
 - **merge-back**: phase 완료 시 BE→FE 순으로 main에 merge. 충돌 발생 시 abort + `blocked`.
@@ -188,7 +190,7 @@ execute.py가 자동으로 처리하는 것:
 | Hook | Trigger | 역할 |
 |------|---------|------|
 | `precheck_bash.py` | PreToolUse / Bash | 위험 명령 차단 — `rm -rf /etc`, `git push --force`, `--no-verify`, `git --amend`, `goose reset`, `docker compose down -v`, `> .env`, `pnpm add` / `npm install` / `go get`(ADR 외 라이브러리), `psql ... DROP/TRUNCATE` 등 |
-| `precheck_path.py` | PreToolUse / Edit·Write | worktree·shared 경계 강제. `.worktrees/backend/`는 `backend/`+`db/`만, `.worktrees/frontend/`는 `frontend/`만, 메인(shared)은 `docs/`+`scripts/`+`.claude/`+모듈 `CLAUDE.md`+루트 설정만 수정 가능. 그 외 차단 |
+| `precheck_path.py` | PreToolUse / Edit·Write | worktree·shared 경계 강제. `.worktrees/backend/`는 `backend/`+`db/`만, `.worktrees/frontend/`는 `frontend/`만, 메인(shared)은 `docs/`+`scripts/`+`.claude/`+모듈 `CLAUDE.md`+`phases/`+루트 설정만 수정 가능. **자식 Claude(backend/frontend agent)는 `phases/**` 전면 차단** — step 메타는 execute.py가 main에서 박는 책임 분리(B 방안)라 자식이 만질 일이 없다. 그 외 차단 |
 | `postcheck_diff.py` | PostToolUse / Edit·Write | 변경된 파일에 PII(휴대폰 번호 하드코딩)·시크릿(JWT/bcrypt 평문)·PII 로깅(`slog ... phone`)·ADR 외 import(axios/firebase/logrus 등) 검출 |
 | `postcheck_tdd.py` | PostToolUse / Edit·Write | backend `internal/{http,domain,repo,auth,batch}` 파일 변경에 대응하는 `_test.go`가 없으면 차단(TDD 강제). `cmd/`·`testutil/`·`apperr/`·`config/`는 면제 |
 | `session_start.py` | SessionStart | 새 세션 시작 시 git branch·worktree 위치·phases 진행 상황을 자동 주입 |

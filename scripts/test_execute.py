@@ -592,6 +592,40 @@ class TestParseFrontmatter:
 
 
 # ---------------------------------------------------------------------------
+# _read_step_summary (B 방안 — frontmatter summary를 main 인덱스에 박는다)
+# ---------------------------------------------------------------------------
+
+
+class TestReadStepSummary:
+    def test_reads_summary_from_frontmatter(self, executor, tmp_path):
+        executor._phase_dir = tmp_path
+        (tmp_path / "step3.md").write_text(
+            "---\nagent: backend\nsummary: 산출물 한 줄\n---\n본문\n",
+            encoding="utf-8",
+        )
+        assert executor._read_step_summary(3) == "산출물 한 줄"
+
+    def test_reads_quoted_summary(self, executor, tmp_path):
+        executor._phase_dir = tmp_path
+        (tmp_path / "step3.md").write_text(
+            '---\nagent: backend\nsummary: "산출물(괄호) + 콜론: 허용"\n---\nbody',
+            encoding="utf-8",
+        )
+        assert executor._read_step_summary(3) == "산출물(괄호) + 콜론: 허용"
+
+    def test_returns_empty_when_no_summary(self, executor, tmp_path):
+        executor._phase_dir = tmp_path
+        (tmp_path / "step1.md").write_text(
+            "---\nagent: backend\n---\n본문", encoding="utf-8"
+        )
+        assert executor._read_step_summary(1) == ""
+
+    def test_returns_empty_when_no_step_file(self, executor, tmp_path):
+        executor._phase_dir = tmp_path
+        assert executor._read_step_summary(99) == ""
+
+
+# ---------------------------------------------------------------------------
 # _agent_for_step (index.json > frontmatter > shared 기본값)
 # ---------------------------------------------------------------------------
 

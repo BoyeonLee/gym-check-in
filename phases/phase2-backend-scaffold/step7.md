@@ -1,6 +1,7 @@
 ---
 agent: backend
 depends_on: [memberships]
+summary: "POST /api/check-ins(5초 LRU + FOR UPDATE + 횟수권 차감 + remaining=0→expired) + GET /api/check-ins(raw/daily, 92일 한도) + GET /api/sales/summary(gross/refund/net 분리, 전역) + POST /api/memberships/bulk-extend(전역 + idempotency + paused/예약정지 pause_* +days + first_conflict_membership_id)."
 ---
 
 # Step 7: 체크인 + 매출 집계 + 대량 연장
@@ -328,12 +329,12 @@ go test -race -tags=integration ./...
 - bulk-extend로 paused 회원권의 pause_end_date도 +days
 - bulk-extend 충돌 시 다른 회원권 end_date 변경 없음
 
-## 검증 절차
+## 작업 마감 절차 (B 방안 — 책임 분리)
 
-1. AC 명령 직접 실행.
-2. `code-reviewer` 서브에이전트 호출. 입력: 단계 이름(`phase2-backend-scaffold/checkins-sales-bulk`), `git diff HEAD --stat`. PASS 응답 필요.
-3. step7 status 업데이트:
-   - PASS → `"status": "completed"` + `"summary": "POST /api/check-ins(5초 LRU + FOR UPDATE + 횟수권 차감 + remaining=0→expired) + GET /api/check-ins(raw/daily, 92일 한도) + GET /api/sales/summary(gross/refund/net 분리, 전역) + POST /api/memberships/bulk-extend(전역 + idempotency + paused/예약정지 pause_* +days + first_conflict_membership_id)."`
+1. AC 명령 직접 실행해 빌드/테스트 통과 확인.
+2. 변경된 코드를 conventional commit으로 worktree(`feat/phase2-backend-scaffold-be`)에 commit. **`phases/`는 절대 만지지 마라** — hook이 차단한다.
+3. status·summary·timestamp는 박지 마라. execute.py가 acceptance + code-reviewer gate 통과 시 main 인덱스에 frontmatter `summary`를 직접 박는다.
+4. 사용자 개입이 필요한 상황이면 commit하지 말고 stdout에 사유를 쓰고 종료. execute.py가 retry/error/blocked로 판정한다.
 
 ## 금지사항
 
