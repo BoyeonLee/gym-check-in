@@ -60,7 +60,8 @@
       "step": 7,
       "name": "checkins-sales-bulk",
       "agent": "backend",
-      "status": "pending"
+      "status": "pending",
+      "started_at": "2026-05-08T14:17:11+0900"
     },
     {
       "step": 8,
