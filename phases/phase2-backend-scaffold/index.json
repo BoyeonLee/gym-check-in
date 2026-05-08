@@ -51,7 +51,7 @@
       "step": 6,
       "name": "memberships",
       "agent": "backend",
-      "status": "deferred"
+      "status": "pending"
     },
     {
       "step": 7,
