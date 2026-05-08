@@ -301,7 +301,19 @@ func TestListCheckInsDaily_GroupsByMemberAndKstDate(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 daily row, got %d (%+v)", len(rows), rows)
 	}
-	if rows[0].CheckinCount != 2 {
-		t.Errorf("expected checkin_count=2, got %d", rows[0].CheckinCount)
+	r := rows[0]
+	if r.CheckinCount != 2 {
+		t.Errorf("expected checkin_count=2, got %d", r.CheckinCount)
+	}
+	// API.md daily contract: branch_id/branch_name + first_checked_in_at
+	// must accompany the (member_id, date) bucket.
+	if r.BranchID != bid {
+		t.Errorf("branch_id=%d want %d", r.BranchID, bid)
+	}
+	if r.BranchName == "" {
+		t.Errorf("branch_name empty: %+v", r)
+	}
+	if r.FirstCheckedInAt.IsZero() {
+		t.Errorf("first_checked_in_at zero: %+v", r)
 	}
 }

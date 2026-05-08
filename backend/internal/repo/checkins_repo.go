@@ -280,20 +280,27 @@ func ListCheckInsRaw(ctx context.Context, q Querier, in ListCheckInsInput) ([]Ch
 	return out, next, nil
 }
 
-// DailyCheckInRow is one (member_id, kst_date) bucket the daily
-// aggregate emits. CheckinCount counts ALL rows in the bucket — the
-// pass10 decrement rule lives in DoCheckIn, not in the aggregator.
+// DailyCheckInRow is one (member_id, kst_date, branch_id) bucket the daily
+// aggregate emits. The natural group key includes branch_id because the
+// same member can have memberships in multiple branches and the kiosk
+// admin UI surfaces per-branch counts. CheckinCount counts ALL rows in
+// the bucket — the pass10 decrement rule lives in DoCheckIn, not the
+// aggregator. FirstCheckedInAt is the earliest checked_in_at inside the
+// bucket so the wire payload can render a KST timestamp.
 type DailyCheckInRow struct {
-	MemberID     int64
-	MemberName   string
-	Date         time.Time // KST date
-	CheckinCount int
+	MemberID         int64
+	MemberName       string
+	BranchID         int64
+	BranchName       string
+	Date             time.Time // KST date
+	CheckinCount     int
+	FirstCheckedInAt time.Time
 }
 
-// ListCheckInsDaily groups check_ins by (member_id, KST date). The
-// caller must validate that (To - From) <= 92 days before invoking.
-// No cursor pagination — by contract the page returns the entire
-// window in one shot (per backend/CLAUDE.md).
+// ListCheckInsDaily groups check_ins by (member_id, branch_id, KST date).
+// The caller must validate that (To - From) <= 92 days before invoking.
+// No cursor pagination — by contract the page returns the entire window
+// in one shot (per backend/CLAUDE.md).
 func ListCheckInsDaily(ctx context.Context, q Querier, in ListCheckInsInput) ([]DailyCheckInRow, error) {
 	conds := []string{
 		"(ci.checked_in_at at time zone 'Asia/Seoul')::date >= $1::date",
@@ -311,13 +318,17 @@ func ListCheckInsDaily(ctx context.Context, q Querier, in ListCheckInsInput) ([]
 
 	stmt := `
 		select ci.member_id, m.name as member_name,
+		       ci.branch_id, b.name as branch_name,
 		       (ci.checked_in_at at time zone 'Asia/Seoul')::date as kst_date,
-		       count(*)::int as checkin_count
+		       count(*)::int as checkin_count,
+		       min(ci.checked_in_at)        as first_checked_in_at
 		from check_ins ci
-		join members m on m.id = ci.member_id
+		join members  m on m.id = ci.member_id
+		join branches b on b.id = ci.branch_id
 		where ` + strings.Join(conds, " and ") + `
-		group by ci.member_id, m.name, (ci.checked_in_at at time zone 'Asia/Seoul')::date
-		order by kst_date desc, ci.member_id asc
+		group by ci.member_id, m.name, ci.branch_id, b.name,
+		         (ci.checked_in_at at time zone 'Asia/Seoul')::date
+		order by kst_date desc, ci.member_id asc, ci.branch_id asc
 	`
 
 	rows, err := q.Query(ctx, stmt, args...)
@@ -329,7 +340,11 @@ func ListCheckInsDaily(ctx context.Context, q Querier, in ListCheckInsInput) ([]
 	out := make([]DailyCheckInRow, 0)
 	for rows.Next() {
 		var r DailyCheckInRow
-		if err := rows.Scan(&r.MemberID, &r.MemberName, &r.Date, &r.CheckinCount); err != nil {
+		if err := rows.Scan(
+			&r.MemberID, &r.MemberName,
+			&r.BranchID, &r.BranchName,
+			&r.Date, &r.CheckinCount, &r.FirstCheckedInAt,
+		); err != nil {
 			return nil, fmt.Errorf("repo: list check-ins daily scan: %w", err)
 		}
 		out = append(out, r)

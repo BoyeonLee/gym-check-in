@@ -24,29 +24,42 @@ type SalesHandlers struct {
 	Pool *pgxpool.Pool
 }
 
-// salesMethodBucket is the wire shape for one entry in by_method. Method is
-// always present; cash/card both appear even when the totals are zero so the
-// frontend can render a stable two-row table.
-type salesMethodBucket struct {
-	Method      string `json:"method"`
-	GrossTotal  int    `json:"gross_total"`
-	RefundTotal int    `json:"refund_total"`
-	NetTotal    int    `json:"net_total"`
+// salesBucket is the (gross, refund, net) triple shared by every nested
+// breakdown in the response. Per docs/API.md the inner buckets use
+// short keys (`gross`/`refund`/`net`) while the top-level totals use the
+// `_total` suffix.
+type salesBucket struct {
+	Gross  int `json:"gross"`
+	Refund int `json:"refund"`
+	Net    int `json:"net"`
 }
 
+// salesByMethod is rendered as a JSON object keyed by method name. cash and
+// card are ALWAYS present (zero-valued when there were no payments of that
+// method) so the frontend never has to branch on optional fields.
+type salesByMethod struct {
+	Cash salesBucket `json:"cash"`
+	Card salesBucket `json:"card"`
+}
+
+// salesDayBucket is one entry in by_day. The flat gross/refund/net are the
+// day's full total; cash and card are the per-method split for that single
+// date (both always present, zero-valued if missing).
 type salesDayBucket struct {
-	Date        string `json:"date"`
-	GrossTotal  int    `json:"gross_total"`
-	RefundTotal int    `json:"refund_total"`
-	NetTotal    int    `json:"net_total"`
+	Date   string      `json:"date"`
+	Gross  int         `json:"gross"`
+	Refund int         `json:"refund"`
+	Net    int         `json:"net"`
+	Cash   salesBucket `json:"cash"`
+	Card   salesBucket `json:"card"`
 }
 
 type salesSummaryResponse struct {
-	GrossTotal  int                 `json:"gross_total"`
-	RefundTotal int                 `json:"refund_total"`
-	NetTotal    int                 `json:"net_total"`
-	ByMethod    []salesMethodBucket `json:"by_method"`
-	ByDay       []salesDayBucket    `json:"by_day"`
+	GrossTotal  int              `json:"gross_total"`
+	RefundTotal int              `json:"refund_total"`
+	NetTotal    int              `json:"net_total"`
+	ByMethod    salesByMethod    `json:"by_method"`
+	ByDay       []salesDayBucket `json:"by_day"`
 }
 
 // Summary implements GET /api/sales/summary. Global-only — the route is
@@ -100,26 +113,30 @@ func (h *SalesHandlers) Summary(c *gin.Context) {
 	}
 
 	resp := salesSummaryResponse{
-		GrossTotal:  row.GrossTotal,
-		RefundTotal: row.RefundTotal,
-		NetTotal:    row.NetTotal,
-		ByMethod:    make([]salesMethodBucket, 0, len(row.ByMethod)),
+		GrossTotal:  row.Total.Gross,
+		RefundTotal: row.Total.Refund,
+		NetTotal:    row.Total.Net,
 		ByDay:       make([]salesDayBucket, 0, len(row.ByDay)),
 	}
+	// by_method: collapse the variable-length slice into the fixed cash/card
+	// object the contract demands. Missing methods stay zero-valued.
 	for _, b := range row.ByMethod {
-		resp.ByMethod = append(resp.ByMethod, salesMethodBucket{
-			Method:      b.Method,
-			GrossTotal:  b.GrossTotal,
-			RefundTotal: b.RefundTotal,
-			NetTotal:    b.NetTotal,
-		})
+		bucket := salesBucket{Gross: b.Gross, Refund: b.Refund, Net: b.Net}
+		switch b.Method {
+		case "cash":
+			resp.ByMethod.Cash = bucket
+		case "card":
+			resp.ByMethod.Card = bucket
+		}
 	}
 	for _, b := range row.ByDay {
 		resp.ByDay = append(resp.ByDay, salesDayBucket{
-			Date:        b.Date.Format("2006-01-02"),
-			GrossTotal:  b.GrossTotal,
-			RefundTotal: b.RefundTotal,
-			NetTotal:    b.NetTotal,
+			Date:   b.Date.Format("2006-01-02"),
+			Gross:  b.Total.Gross,
+			Refund: b.Total.Refund,
+			Net:    b.Total.Net,
+			Cash:   salesBucket{Gross: b.Cash.Gross, Refund: b.Cash.Refund, Net: b.Cash.Net},
+			Card:   salesBucket{Gross: b.Card.Gross, Refund: b.Card.Refund, Net: b.Card.Net},
 		})
 	}
 	c.JSON(http.StatusOK, resp)

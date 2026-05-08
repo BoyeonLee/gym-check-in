@@ -141,7 +141,9 @@ func TestCheckIn_PausedMembershipFails(t *testing.T) {
 }
 
 // TestCheckIn_KioskResponseHasNoPII: the kiosk response must not include
-// member name, phone, or birth_date.
+// member name, phone, or birth_date — and must not echo back member_id or
+// branch_id (those are request inputs the client already has, removing
+// them keeps the unauthenticated surface minimal per docs/API.md).
 func TestCheckIn_KioskResponseHasNoPII(t *testing.T) {
 	f := newAdminFixture(t)
 	bid := testutil.CreateBranch(t, f.pool, nil)
@@ -164,6 +166,20 @@ func TestCheckIn_KioskResponseHasNoPII(t *testing.T) {
 	body := rec.Body.String()
 	if contains(body, "비밀이름") || contains(body, "01099998888") || contains(body, "1985-12-25") {
 		t.Errorf("kiosk response leaked PII: %s", body)
+	}
+	// Per docs/API.md the kiosk response is { id, checked_in_at, membership }
+	// — neither member_id nor branch_id should appear at the top level.
+	var resp map[string]any
+	mustDecode(t, rec, &resp)
+	for _, k := range []string{"member_id", "branch_id"} {
+		if _, ok := resp[k]; ok {
+			t.Errorf("kiosk response must not include %q: %v", k, resp)
+		}
+	}
+	for _, k := range []string{"id", "checked_in_at", "membership"} {
+		if _, ok := resp[k]; !ok {
+			t.Errorf("kiosk response missing %q: %v", k, resp)
+		}
 	}
 }
 
@@ -399,17 +415,38 @@ func TestCheckInList_DailyAggregate(t *testing.T) {
 	}
 	var resp struct {
 		Items []struct {
-			MemberID     int64  `json:"member_id"`
-			Date         string `json:"date"`
-			CheckinCount int    `json:"checkin_count"`
+			MemberID         int64  `json:"member_id"`
+			MemberName       string `json:"member_name"`
+			BranchID         int64  `json:"branch_id"`
+			BranchName       string `json:"branch_name"`
+			Date             string `json:"date"`
+			CheckinCount     int    `json:"checkin_count"`
+			FirstCheckedInAt string `json:"first_checked_in_at"`
 		} `json:"items"`
 	}
 	mustDecode(t, rec, &resp)
 	var found bool
 	for _, it := range resp.Items {
-		if it.MemberID == mid && it.CheckinCount == 2 {
-			found = true
+		if it.MemberID != mid || it.CheckinCount != 2 {
+			continue
 		}
+		// API.md daily row contract — branch_id/branch_name + first_checked_in_at
+		// must be populated and KST-formatted (+09:00 offset, never UTC `Z`).
+		if it.BranchID != bid {
+			t.Errorf("daily row branch_id=%d want %d", it.BranchID, bid)
+		}
+		if it.BranchName == "" {
+			t.Errorf("daily row branch_name empty: %+v", it)
+		}
+		if it.MemberName == "" {
+			t.Errorf("daily row member_name empty: %+v", it)
+		}
+		if it.FirstCheckedInAt == "" {
+			t.Errorf("daily row first_checked_in_at empty: %+v", it)
+		} else if !contains(it.FirstCheckedInAt, "+09:00") {
+			t.Errorf("daily row first_checked_in_at=%q want KST +09:00 offset", it.FirstCheckedInAt)
+		}
+		found = true
 	}
 	if !found {
 		t.Errorf("expected daily row count=2 for member %d, got %+v", mid, resp.Items)

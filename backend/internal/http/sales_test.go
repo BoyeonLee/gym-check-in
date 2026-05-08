@@ -65,8 +65,16 @@ func TestSales_BranchAdminForbidden(t *testing.T) {
 	}
 }
 
-// TestSales_GlobalSummary: gross / refund / net split, by_method (cash/card),
-// by_day rows.
+// salesBucketJSON mirrors the per-bucket wire shape (`gross/refund/net`).
+type salesBucketJSON struct {
+	Gross  int `json:"gross"`
+	Refund int `json:"refund"`
+	Net    int `json:"net"`
+}
+
+// TestSales_GlobalSummary: gross / refund / net split, by_method object
+// (cash + card always present), by_day rows with nested per-method splits
+// — matches the wire shape documented in docs/API.md.
 func TestSales_GlobalSummary(t *testing.T) {
 	f := newAdminFixture(t)
 	seedPaymentScene(t, f.pool)
@@ -81,17 +89,17 @@ func TestSales_GlobalSummary(t *testing.T) {
 		GrossTotal  int `json:"gross_total"`
 		RefundTotal int `json:"refund_total"`
 		NetTotal    int `json:"net_total"`
-		ByMethod    []struct {
-			Method      string `json:"method"`
-			GrossTotal  int    `json:"gross_total"`
-			RefundTotal int    `json:"refund_total"`
-			NetTotal    int    `json:"net_total"`
+		ByMethod    struct {
+			Cash salesBucketJSON `json:"cash"`
+			Card salesBucketJSON `json:"card"`
 		} `json:"by_method"`
 		ByDay []struct {
-			Date        string `json:"date"`
-			GrossTotal  int    `json:"gross_total"`
-			RefundTotal int    `json:"refund_total"`
-			NetTotal    int    `json:"net_total"`
+			Date   string          `json:"date"`
+			Gross  int             `json:"gross"`
+			Refund int             `json:"refund"`
+			Net    int             `json:"net"`
+			Cash   salesBucketJSON `json:"cash"`
+			Card   salesBucketJSON `json:"card"`
 		} `json:"by_day"`
 	}
 	mustDecode(t, rec, &resp)
@@ -108,19 +116,43 @@ func TestSales_GlobalSummary(t *testing.T) {
 	if resp.NetTotal != 200000 {
 		t.Errorf("net_total=%d want 200000", resp.NetTotal)
 	}
-	// by_method must include both cash and card.
-	got := map[string]struct{ Gross, Refund, Net int }{}
-	for _, b := range resp.ByMethod {
-		got[b.Method] = struct{ Gross, Refund, Net int }{b.GrossTotal, b.RefundTotal, b.NetTotal}
+	// by_method object: both cash and card always present.
+	if c := resp.ByMethod.Cash; c.Gross != 100000 || c.Refund != 50000 || c.Net != 50000 {
+		t.Errorf("by_method.cash=%+v want gross=100000 refund=50000 net=50000", c)
 	}
-	if c, ok := got["cash"]; !ok || c.Gross != 100000 || c.Refund != 50000 || c.Net != 50000 {
-		t.Errorf("by_method[cash]=%+v want gross=100000 refund=50000 net=50000", c)
-	}
-	if c, ok := got["card"]; !ok || c.Gross != 150000 || c.Refund != 0 || c.Net != 150000 {
-		t.Errorf("by_method[card]=%+v want gross=150000 refund=0 net=150000", c)
+	if c := resp.ByMethod.Card; c.Gross != 150000 || c.Refund != 0 || c.Net != 150000 {
+		t.Errorf("by_method.card=%+v want gross=150000 refund=0 net=150000", c)
 	}
 	if len(resp.ByDay) != 2 {
-		t.Errorf("by_day len=%d want 2 (5/1 + 5/2), rows=%+v", len(resp.ByDay), resp.ByDay)
+		t.Fatalf("by_day len=%d want 2 (5/1 + 5/2), rows=%+v", len(resp.ByDay), resp.ByDay)
+	}
+	// Each day must carry its own cash + card split (zero-valued if absent).
+	for _, d := range resp.ByDay {
+		switch d.Date {
+		case "2026-05-01":
+			// cash 100000 (branch B), card 150000 (branch A)
+			if d.Gross != 250000 || d.Refund != 0 || d.Net != 250000 {
+				t.Errorf("by_day 5/1 totals=%+v want gross=250000 refund=0 net=250000", d)
+			}
+			if d.Cash.Gross != 100000 || d.Cash.Refund != 0 {
+				t.Errorf("by_day 5/1 cash=%+v want gross=100000 refund=0", d.Cash)
+			}
+			if d.Card.Gross != 150000 || d.Card.Refund != 0 {
+				t.Errorf("by_day 5/1 card=%+v want gross=150000 refund=0", d.Card)
+			}
+		case "2026-05-02":
+			// cash refund -50000 only
+			if d.Gross != 0 || d.Refund != 50000 || d.Net != -50000 {
+				t.Errorf("by_day 5/2 totals=%+v want gross=0 refund=50000 net=-50000", d)
+			}
+			if d.Cash.Refund != 50000 || d.Cash.Net != -50000 {
+				t.Errorf("by_day 5/2 cash=%+v want refund=50000 net=-50000", d.Cash)
+			}
+			// card was not used on 5/2 — bucket must still be present, zero-valued.
+			if d.Card != (salesBucketJSON{}) {
+				t.Errorf("by_day 5/2 card=%+v want zero-valued", d.Card)
+			}
+		}
 	}
 }
 

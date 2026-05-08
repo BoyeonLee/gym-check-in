@@ -94,38 +94,48 @@ type SalesSummaryInput struct {
 	BranchID *int64
 }
 
-// SalesMethodBucket is one (method, totals) row in the by_method matrix.
-// All three totals are non-negative integers; refund is the absolute
-// value of the negative payments so the wire payload reads naturally.
-type SalesMethodBucket struct {
-	Method      string
-	GrossTotal  int
-	RefundTotal int
-	NetTotal    int
+// SalesBucket is the (gross, refund, net) triple shared by the top-level
+// totals, the per-method buckets, and the per-day buckets (+ their nested
+// per-method splits). All three values are non-negative; refund is stored
+// as the absolute value of the negative payment rows so the wire payload
+// reads naturally.
+type SalesBucket struct {
+	Gross  int
+	Refund int
+	Net    int
 }
 
-// SalesDayBucket is one (paid_at, totals) row in the by_day matrix.
+// SalesMethodBucket is one (method, totals) row in the by_method matrix.
+type SalesMethodBucket struct {
+	Method string
+	SalesBucket
+}
+
+// SalesDayBucket is one paid_at row in the by_day matrix. Cash and Card
+// hold the per-method split for that single date so the wire payload
+// surfaces the breakdown without a second round-trip.
 type SalesDayBucket struct {
-	Date        time.Time
-	GrossTotal  int
-	RefundTotal int
-	NetTotal    int
+	Date  time.Time
+	Total SalesBucket
+	Cash  SalesBucket
+	Card  SalesBucket
 }
 
 // SalesSummaryRow holds the aggregated response. Totals are projected
 // from payments alone; backend rules forbid back-computing revenue from
 // memberships or check_ins.
 type SalesSummaryRow struct {
-	GrossTotal  int
-	RefundTotal int
-	NetTotal    int
-	ByMethod    []SalesMethodBucket
-	ByDay       []SalesDayBucket
+	Total    SalesBucket
+	ByMethod []SalesMethodBucket
+	ByDay    []SalesDayBucket
 }
 
 // SalesSummary aggregates payments into totals + per-method + per-day
-// buckets.  Refund_total is reported as |sum(amount<0)| (positive value)
-// so the JSON-facing handler can render symmetric numbers.
+// buckets. Refund is reported as |sum(amount<0)| (positive value) so the
+// JSON-facing handler can render symmetric numbers. The handler is
+// responsible for projecting per-method buckets into the cash/card object
+// shape that docs/API.md requires (both keys always present even when
+// zero).
 func SalesSummary(ctx context.Context, q Querier, in SalesSummaryInput) (SalesSummaryRow, error) {
 	args := []any{in.From, in.To}
 	branchClause := ""
@@ -144,7 +154,7 @@ func SalesSummary(ctx context.Context, q Querier, in SalesSummaryInput) (SalesSu
 		where paid_at between $1 and $2` + branchClause
 
 	var s SalesSummaryRow
-	if err := q.QueryRow(ctx, totalsStmt, args...).Scan(&s.GrossTotal, &s.RefundTotal, &s.NetTotal); err != nil {
+	if err := q.QueryRow(ctx, totalsStmt, args...).Scan(&s.Total.Gross, &s.Total.Refund, &s.Total.Net); err != nil {
 		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary totals: %w", err)
 	}
 
@@ -164,7 +174,7 @@ func SalesSummary(ctx context.Context, q Querier, in SalesSummaryInput) (SalesSu
 	}
 	for rows.Next() {
 		var b SalesMethodBucket
-		if err := rows.Scan(&b.Method, &b.GrossTotal, &b.RefundTotal, &b.NetTotal); err != nil {
+		if err := rows.Scan(&b.Method, &b.Gross, &b.Refund, &b.Net); err != nil {
 			rows.Close()
 			return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_method scan: %w", err)
 		}
@@ -176,27 +186,49 @@ func SalesSummary(ctx context.Context, q Querier, in SalesSummaryInput) (SalesSu
 	}
 	rows.Close()
 
-	// 3) by_day.
+	// 3) by_day — group by (paid_at, method) so the handler can fill the
+	//    nested cash/card object the API contract requires. Days with no
+	//    cash row still emit a zero-valued cash bucket; same for card.
 	dayStmt := `
-		select paid_at,
+		select paid_at, method,
 			coalesce(sum(case when amount > 0 then amount else 0 end), 0)::int,
 			coalesce(sum(case when amount < 0 then -amount else 0 end), 0)::int,
 			coalesce(sum(amount), 0)::int
 		from payments
 		where paid_at between $1 and $2` + branchClause + `
-		group by paid_at
-		order by paid_at asc`
+		group by paid_at, method
+		order by paid_at asc, method asc`
 	rows, err = q.Query(ctx, dayStmt, args...)
 	if err != nil {
 		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_day: %w", err)
 	}
+
+	// dayIndex preserves first-seen order so callers see ascending dates.
+	dayIndex := make(map[time.Time]int)
 	for rows.Next() {
-		var b SalesDayBucket
-		if err := rows.Scan(&b.Date, &b.GrossTotal, &b.RefundTotal, &b.NetTotal); err != nil {
+		var date time.Time
+		var method string
+		var gross, refund, net int
+		if err := rows.Scan(&date, &method, &gross, &refund, &net); err != nil {
 			rows.Close()
 			return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_day scan: %w", err)
 		}
-		s.ByDay = append(s.ByDay, b)
+		idx, ok := dayIndex[date]
+		if !ok {
+			s.ByDay = append(s.ByDay, SalesDayBucket{Date: date})
+			idx = len(s.ByDay) - 1
+			dayIndex[date] = idx
+		}
+		bucket := SalesBucket{Gross: gross, Refund: refund, Net: net}
+		s.ByDay[idx].Total.Gross += gross
+		s.ByDay[idx].Total.Refund += refund
+		s.ByDay[idx].Total.Net += net
+		switch method {
+		case "cash":
+			s.ByDay[idx].Cash = bucket
+		case "card":
+			s.ByDay[idx].Card = bucket
+		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()

@@ -181,27 +181,43 @@ func TestSalesSummary_GrossRefundNetSeparation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SalesSummary: %v", err)
 	}
-	if got.GrossTotal != 350000 || got.RefundTotal != 100000 || got.NetTotal != 250000 {
+	if got.Total.Gross != 350000 || got.Total.Refund != 100000 || got.Total.Net != 250000 {
 		t.Errorf("totals: gross=%d refund=%d net=%d (want 350000/100000/250000)",
-			got.GrossTotal, got.RefundTotal, got.NetTotal)
+			got.Total.Gross, got.Total.Refund, got.Total.Net)
 	}
 	// by_method: expect cash grant 150000, card grant 200000 / refund 100000.
 	var cashGross, cardGross, cardRefund int
 	for _, m := range got.ByMethod {
 		switch m.Method {
 		case "cash":
-			cashGross = m.GrossTotal
+			cashGross = m.Gross
 		case "card":
-			cardGross = m.GrossTotal
-			cardRefund = m.RefundTotal
+			cardGross = m.Gross
+			cardRefund = m.Refund
 		}
 	}
 	if cashGross != 150000 || cardGross != 200000 || cardRefund != 100000 {
 		t.Errorf("by_method drift: cashGross=%d cardGross=%d cardRefund=%d", cashGross, cardGross, cardRefund)
 	}
-	// by_day: 2 buckets.
+	// by_day: 2 buckets, and day1 must contain cash+card breakdowns.
 	if len(got.ByDay) != 2 {
-		t.Errorf("expected 2 by_day rows, got %d", len(got.ByDay))
+		t.Fatalf("expected 2 by_day rows, got %d", len(got.ByDay))
+	}
+	// Locate day1.
+	var day1Bucket repo.SalesDayBucket
+	for _, b := range got.ByDay {
+		if b.Date.Equal(d1) {
+			day1Bucket = b
+		}
+	}
+	if day1Bucket.Cash.Gross != 100000 || day1Bucket.Cash.Refund != 0 || day1Bucket.Cash.Net != 100000 {
+		t.Errorf("by_day d1 cash split drift: %+v", day1Bucket.Cash)
+	}
+	if day1Bucket.Card.Gross != 200000 || day1Bucket.Card.Refund != 100000 || day1Bucket.Card.Net != 100000 {
+		t.Errorf("by_day d1 card split drift: %+v", day1Bucket.Card)
+	}
+	if day1Bucket.Total.Gross != 300000 || day1Bucket.Total.Refund != 100000 || day1Bucket.Total.Net != 200000 {
+		t.Errorf("by_day d1 total drift: %+v", day1Bucket.Total)
 	}
 }
 
@@ -231,7 +247,7 @@ func TestSalesSummary_BranchFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SalesSummary: %v", err)
 	}
-	if got.GrossTotal != 100000 {
-		t.Errorf("expected b1-scoped gross=100000, got %d", got.GrossTotal)
+	if got.Total.Gross != 100000 {
+		t.Errorf("expected b1-scoped gross=100000, got %d", got.Total.Gross)
 	}
 }

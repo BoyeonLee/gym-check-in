@@ -4,9 +4,10 @@
 //   - GET  /api/check-ins (admin)         — raw or daily-aggregate list.
 //
 // The kiosk POST is intentionally PII-free in its response: only the new row
-// id, member_id, branch_id, the KST-formatted timestamp, and a stripped
-// membership snapshot leave the server. Names / phones / birth dates never
-// appear here (the surface is unauthenticated and the response gets logged).
+// id, the KST-formatted timestamp, and a stripped membership snapshot leave
+// the server. Member id / branch id are the request inputs the client
+// already holds, and names / phones / birth dates never appear here (the
+// surface is unauthenticated and the response gets logged).
 //
 // The 5-second LRU lives on this handler. The cache key is "<member>:<branch>"
 // and the value is the verbatim JSON body the previous request received so a
@@ -64,11 +65,10 @@ type kioskMembership struct {
 
 // kioskCheckInResponse is the wire payload for a successful check-in. Note
 // the absence of any member-name / phone / birth field — see the package
-// comment for the rationale.
+// comment for the rationale. We also strip member_id / branch_id because
+// they are request inputs the client already holds (docs/API.md spec).
 type kioskCheckInResponse struct {
 	ID          int64           `json:"id"`
-	MemberID    int64           `json:"member_id"`
-	BranchID    int64           `json:"branch_id"`
 	CheckedInAt string          `json:"checked_in_at"`
 	Membership  kioskMembership `json:"membership"`
 }
@@ -145,8 +145,6 @@ func (h *CheckInHandlers) Create(c *gin.Context) {
 
 	resp := kioskCheckInResponse{
 		ID:          result.Row.ID,
-		MemberID:    result.Row.MemberID,
-		BranchID:    result.Row.BranchID,
 		CheckedInAt: result.Row.CheckedInAt.In(util.KST).Format(time.RFC3339),
 		Membership: kioskMembership{
 			Type:         result.Membership.Type,
@@ -203,11 +201,18 @@ type listCheckInRaw struct {
 }
 
 // listCheckInDaily is one row of GET /api/check-ins?aggregate=daily.
+// The (member_id, date, branch_id) tuple is the natural group key —
+// the same member can have memberships in multiple branches, so the
+// daily summary projects branch identity alongside the count and the
+// first KST timestamp inside the bucket (docs/API.md contract).
 type listCheckInDaily struct {
-	MemberID     int64  `json:"member_id"`
-	MemberName   string `json:"member_name"`
-	Date         string `json:"date"`
-	CheckinCount int    `json:"checkin_count"`
+	MemberID         int64  `json:"member_id"`
+	MemberName       string `json:"member_name"`
+	BranchID         int64  `json:"branch_id"`
+	BranchName       string `json:"branch_name"`
+	Date             string `json:"date"`
+	CheckinCount     int    `json:"checkin_count"`
+	FirstCheckedInAt string `json:"first_checked_in_at"`
 }
 
 // List implements GET /api/check-ins. Branch admins are scoped to their own
@@ -277,10 +282,13 @@ func (h *CheckInHandlers) List(c *gin.Context) {
 		out := make([]listCheckInDaily, 0, len(rows))
 		for _, r := range rows {
 			out = append(out, listCheckInDaily{
-				MemberID:     r.MemberID,
-				MemberName:   r.MemberName,
-				Date:         r.Date.Format("2006-01-02"),
-				CheckinCount: r.CheckinCount,
+				MemberID:         r.MemberID,
+				MemberName:       r.MemberName,
+				BranchID:         r.BranchID,
+				BranchName:       r.BranchName,
+				Date:             r.Date.Format("2006-01-02"),
+				CheckinCount:     r.CheckinCount,
+				FirstCheckedInAt: r.FirstCheckedInAt.In(util.KST).Format(time.RFC3339),
 			})
 		}
 		c.JSON(http.StatusOK, gin.H{"items": out})
