@@ -265,11 +265,16 @@ go tool cover -func=/tmp/cov.out | grep -E '^total:'
 
 ## 작업 마감 절차 (B 방안 — 책임 분리)
 
-1. AC 명령 직접 실행해 빌드/테스트 통과 확인.
-2. **체크리스트 100% 충족 자가 점검**: `backend/PHASE2_AC.md`의 모든 항목에 대응 테스트가 있는지 grep으로 확인. 누락 발견 시 그 step을 다시 보강.
+1. AC 명령 직접 실행해 빌드/테스트 통과 확인. **commit 전에 모든 테스트가 통과해야 한다.**
+2. **체크리스트 100% 충족 자가 점검**: `backend/PHASE2_AC.md`의 모든 항목에 대응 테스트가 있는지 grep으로 확인. 누락 발견 시 그 step을 다시 보강. (commit 전 단계)
 3. 변경된 코드를 conventional commit으로 worktree(`feat/phase2-backend-scaffold-be`)에 commit. **`phases/`는 절대 만지지 마라** — hook이 차단한다.
-4. status·summary·timestamp는 박지 마라. execute.py가 acceptance + code-reviewer gate 통과 시 main 인덱스에 frontmatter `summary`를 직접 박는다. **phase2 전체 status도 execute.py가 마지막 step 통과 시 자동으로 `completed`로 마크**(top-level `phases/index.json`).
-5. 사용자 개입이 필요한 상황이면 commit하지 말고 stdout에 사유를 쓰고 종료.
+4. **commit 직후 즉시 종료**한다. 다음 행동은 모두 금지:
+   - 추가 도구 호출(테스트 재실행, 파일 재읽기, code-review 시뮬레이션, 추가 commit 등) 금지
+   - 마무리 요약·보고 메시지 출력 금지
+   - status·summary·timestamp는 박지 마라
+
+   부모 execute.py가 자식 종료 직후 acceptance(go vet/build/test -race)와 code-reviewer를 **다시** 돌린다. 자식이 commit 후 무엇을 더 해도 부모 검증이 항상 최종이라 자식의 추가 작업은 100% 폐기물이다. max-turns 도달의 가장 흔한 원인이 commit 이후의 불필요한 마무리 턴이라 이를 명시적으로 차단한다. **phase2 전체 status도 execute.py가 마지막 step 통과 시 자동으로 `completed`로 마크**한다(top-level `phases/index.json`).
+5. 사용자 개입이 필요한 상황(ADR 갱신, 도구 미설치 등)이면 **commit하지 말고** stdout에 사유 한 단락만 쓰고 종료. execute.py가 retry/error/blocked로 판정한다. 이 경로는 "commit 후 즉시 종료"와 별개다 — commit 자체가 발생하지 않으면 마감 절차 4를 거치지 않는다.
 
 ## 금지사항
 
