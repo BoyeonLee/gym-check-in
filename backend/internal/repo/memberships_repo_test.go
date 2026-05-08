@@ -354,3 +354,295 @@ func TestGetCurrentMembership_ReturnsNilWhenNoneActive(t *testing.T) {
 		t.Errorf("expected nil, got %+v", got)
 	}
 }
+
+// TestBulkExtend_ExtendsActiveAndPaused — happy path: active row keeps
+// pause_* nil but end_date += days, paused row shifts end_date AND
+// pause_*_date by days, expired/refunded rows are untouched.
+func TestBulkExtend_ExtendsActiveAndPaused(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+
+	bid := testutil.CreateBranch(t, pool, nil)
+	mActive := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+	mPaused := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+	mExpired := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+
+	today := dateUTC(2026, 5, 8)
+
+	// Active monthly: 5/1 – 6/1.
+	idActive := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mActive, Type: "monthly",
+		StartDate: "2026-05-01", EndDate: "2026-06-01", Status: "active",
+	})
+	// Paused monthly with pause_start=5/1 / pause_end=5/10. end_date already
+	// reflects the +9-day extension applied at pause time. Insert as active
+	// then atomically transition to paused so the CHECK
+	// (status='paused' ↔ pause_*_date NOT NULL) is satisfied.
+	idPaused := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mPaused, Type: "monthly",
+		StartDate: "2026-05-01", EndDate: "2026-06-10", Status: "active",
+	})
+	if _, err := pool.Exec(ctx, `update memberships set pause_start_date='2026-05-01', pause_end_date='2026-05-10', pause_used=true, status='paused' where id=$1`, idPaused); err != nil {
+		t.Fatalf("seed paused: %v", err)
+	}
+	// Expired row — not in scope.
+	idExpired := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mExpired, Type: "monthly",
+		StartDate: "2025-01-01", EndDate: "2025-02-01", Status: "expired",
+	})
+
+	// Need a global admin to be `performed_by`.
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{Role: "global"})
+
+	var n int
+	err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		got, err := repo.BulkExtend(ctx, tx, repo.BulkExtendInput{
+			Days:        7,
+			Today:       today,
+			Reason:      "연휴 보상",
+			PerformedBy: adminID,
+		})
+		if err != nil {
+			return err
+		}
+		n = got
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("BulkExtend: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("expected 2 rows extended, got %d", n)
+	}
+
+	// Active end_date moved 5/1 + 7 = 5/8 base + ... let's just check delta.
+	var endActive time.Time
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idActive).Scan(&endActive)
+	if endActive.Format("2006-01-02") != "2026-06-08" {
+		t.Errorf("active end_date: want 2026-06-08, got %s", endActive.Format("2006-01-02"))
+	}
+	// Paused end_date 6/10 + 7 = 6/17, pause_*_date shifted +7.
+	var endPaused, pauseStart, pauseEnd time.Time
+	_ = pool.QueryRow(ctx, `select end_date, pause_start_date, pause_end_date from memberships where id=$1`, idPaused).Scan(&endPaused, &pauseStart, &pauseEnd)
+	if endPaused.Format("2006-01-02") != "2026-06-17" {
+		t.Errorf("paused end_date: want 2026-06-17, got %s", endPaused.Format("2006-01-02"))
+	}
+	if pauseStart.Format("2006-01-02") != "2026-05-08" || pauseEnd.Format("2006-01-02") != "2026-05-17" {
+		t.Errorf("paused pause_*: got start=%s end=%s",
+			pauseStart.Format("2006-01-02"), pauseEnd.Format("2006-01-02"))
+	}
+	// Expired untouched.
+	var endExpired time.Time
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idExpired).Scan(&endExpired)
+	if endExpired.Format("2006-01-02") != "2025-02-01" {
+		t.Errorf("expired row should not move: got %s", endExpired.Format("2006-01-02"))
+	}
+
+	// Each touched row generated a 'bulk_extend' event.
+	var events int
+	_ = pool.QueryRow(ctx, `select count(*) from membership_events where action='bulk_extend'`).Scan(&events)
+	if events != 2 {
+		t.Errorf("expected 2 bulk_extend events, got %d", events)
+	}
+}
+
+// TestBulkExtend_FutureScheduledPauseShifts — active row with pause_used
+// + future pause_start_date should also shift its pause_*_date.
+func TestBulkExtend_FutureScheduledPauseShifts(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+
+	bid := testutil.CreateBranch(t, pool, nil)
+	mid := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{Role: "global"})
+	today := dateUTC(2026, 5, 8)
+
+	// Active row with future-scheduled pause 6/1–6/5, end_date already
+	// reflects the +4 added at pause time.
+	id := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mid, Type: "monthly",
+		StartDate: "2026-05-01", EndDate: "2026-06-05", Status: "active",
+	})
+	if _, err := pool.Exec(ctx, `update memberships set pause_start_date='2026-06-01', pause_end_date='2026-06-05', pause_used=true where id=$1`, id); err != nil {
+		t.Fatalf("seed future pause: %v", err)
+	}
+
+	err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		_, err := repo.BulkExtend(ctx, tx, repo.BulkExtendInput{
+			Days: 3, Today: today, Reason: "x", PerformedBy: adminID,
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("BulkExtend: %v", err)
+	}
+
+	var ps, pe time.Time
+	_ = pool.QueryRow(ctx, `select pause_start_date, pause_end_date from memberships where id=$1`, id).Scan(&ps, &pe)
+	if ps.Format("2006-01-02") != "2026-06-04" || pe.Format("2006-01-02") != "2026-06-08" {
+		t.Errorf("expected future pause shifted by +3, got start=%s end=%s",
+			ps.Format("2006-01-02"), pe.Format("2006-01-02"))
+	}
+}
+
+// TestBulkExtend_ConflictRollsBack — when the new end_date overlaps a
+// future membership the EXCLUDE constraint rejects the UPDATE; the
+// helper surfaces the underlying pgconn error and the transaction rolls
+// back so no row is changed.
+func TestBulkExtend_ConflictRollsBack(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+
+	bid := testutil.CreateBranch(t, pool, nil)
+	mid := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{Role: "global"})
+	today := dateUTC(2026, 5, 8)
+
+	// Active 5/1–6/1, pre-registered next active 6/2–7/2. +5 days extend
+	// would push the first end into 6/6 → overlaps the second.
+	id1 := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mid, Type: "monthly",
+		StartDate: "2026-05-01", EndDate: "2026-06-01", Status: "active",
+	})
+	id2 := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mid, Type: "monthly",
+		StartDate: "2026-06-02", EndDate: "2026-07-02", Status: "active",
+	})
+
+	err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		_, err := repo.BulkExtend(ctx, tx, repo.BulkExtendInput{
+			Days: 5, Today: today, Reason: "x", PerformedBy: adminID,
+		})
+		return err
+	})
+	if err == nil {
+		t.Fatalf("expected EXCLUDE conflict, got nil")
+	}
+	mapped := apperr.FromDBError(err)
+	if mapped == nil || mapped.Code != "MEMBERSHIP_PERIOD_OVERLAP" {
+		t.Errorf("expected MEMBERSHIP_PERIOD_OVERLAP, got %v", mapped)
+	}
+
+	// Both rows untouched.
+	var e1, e2 time.Time
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, id1).Scan(&e1)
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, id2).Scan(&e2)
+	if e1.Format("2006-01-02") != "2026-06-01" {
+		t.Errorf("id1 should not move on conflict, got %s", e1.Format("2006-01-02"))
+	}
+	if e2.Format("2006-01-02") != "2026-07-02" {
+		t.Errorf("id2 should not move on conflict, got %s", e2.Format("2006-01-02"))
+	}
+}
+
+// TestBulkExtend_BranchAndTypeFilters — branch filter limits scope to
+// members of that branch; type filter narrows further.
+func TestBulkExtend_BranchAndTypeFilters(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{Role: "global"})
+	today := dateUTC(2026, 5, 8)
+
+	bid1 := testutil.CreateBranch(t, pool, nil)
+	bid2 := testutil.CreateBranch(t, pool, nil)
+	m1 := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid1})
+	m2 := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid2})
+
+	idM1Monthly := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: m1, Type: "monthly",
+		StartDate: "2026-05-01", EndDate: "2026-06-01", Status: "active",
+	})
+	idM1Pass := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: m1, Type: "pass10",
+		StartDate: "2026-09-01", EndDate: "2026-11-01", Status: "active",
+	})
+	idM2 := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: m2, Type: "monthly",
+		StartDate: "2026-05-01", EndDate: "2026-06-01", Status: "active",
+	})
+
+	// Branch1 + monthly → only idM1Monthly extends.
+	var n int
+	err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		got, err := repo.BulkExtend(ctx, tx, repo.BulkExtendInput{
+			BranchID: &bid1, Type: ptrString("monthly"),
+			Days: 2, Today: today, Reason: "filter", PerformedBy: adminID,
+		})
+		if err != nil {
+			return err
+		}
+		n = got
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("BulkExtend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 (branch1 monthly only), got %d", n)
+	}
+	var em1m, em1p, em2 time.Time
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idM1Monthly).Scan(&em1m)
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idM1Pass).Scan(&em1p)
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idM2).Scan(&em2)
+	if em1m.Format("2006-01-02") != "2026-06-03" {
+		t.Errorf("idM1Monthly: expected 2026-06-03, got %s", em1m.Format("2006-01-02"))
+	}
+	if em1p.Format("2006-01-02") != "2026-11-01" {
+		t.Errorf("idM1Pass should not move (type filter), got %s", em1p.Format("2006-01-02"))
+	}
+	if em2.Format("2006-01-02") != "2026-06-01" {
+		t.Errorf("idM2 should not move (branch filter), got %s", em2.Format("2006-01-02"))
+	}
+}
+
+// TestBulkExtend_SkipsSoftDeletedMembers — a soft-deleted member's
+// memberships are excluded from the scope.
+func TestBulkExtend_SkipsSoftDeletedMembers(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{Role: "global"})
+	today := dateUTC(2026, 5, 8)
+
+	bid := testutil.CreateBranch(t, pool, nil)
+	mActive := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+	mDeleted := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+
+	idA := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mActive, StartDate: "2026-05-01", EndDate: "2026-06-01",
+	})
+	idD := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID: mDeleted, StartDate: "2026-05-01", EndDate: "2026-06-01",
+	})
+	if _, err := pool.Exec(ctx, `update members set deleted_at=now() where id=$1`, mDeleted); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	var n int
+	err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		got, err := repo.BulkExtend(ctx, tx, repo.BulkExtendInput{
+			Days: 4, Today: today, Reason: "x", PerformedBy: adminID,
+		})
+		if err != nil {
+			return err
+		}
+		n = got
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("BulkExtend: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected only the active-member row, got %d", n)
+	}
+	var ea, ed time.Time
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idA).Scan(&ea)
+	_ = pool.QueryRow(ctx, `select end_date from memberships where id=$1`, idD).Scan(&ed)
+	if ea.Format("2006-01-02") != "2026-06-05" {
+		t.Errorf("active member row: want 2026-06-05 got %s", ea.Format("2006-01-02"))
+	}
+	if ed.Format("2006-01-02") != "2026-06-01" {
+		t.Errorf("deleted member row should not move, got %s", ed.Format("2006-01-02"))
+	}
+}
+
+func ptrString(s string) *string { return &s }

@@ -85,6 +85,134 @@ func GetOriginalGrantPayment(ctx context.Context, q Querier, membershipID int64)
 	return row, nil
 }
 
+// SalesSummaryInput selects the payments rows the summary aggregates over.
+// From / To are inclusive paid_at bounds. BranchID is optional (global
+// only — the handler enforces RequireGlobal).
+type SalesSummaryInput struct {
+	From     time.Time
+	To       time.Time
+	BranchID *int64
+}
+
+// SalesMethodBucket is one (method, totals) row in the by_method matrix.
+// All three totals are non-negative integers; refund is the absolute
+// value of the negative payments so the wire payload reads naturally.
+type SalesMethodBucket struct {
+	Method      string
+	GrossTotal  int
+	RefundTotal int
+	NetTotal    int
+}
+
+// SalesDayBucket is one (paid_at, totals) row in the by_day matrix.
+type SalesDayBucket struct {
+	Date        time.Time
+	GrossTotal  int
+	RefundTotal int
+	NetTotal    int
+}
+
+// SalesSummaryRow holds the aggregated response. Totals are projected
+// from payments alone; backend rules forbid back-computing revenue from
+// memberships or check_ins.
+type SalesSummaryRow struct {
+	GrossTotal  int
+	RefundTotal int
+	NetTotal    int
+	ByMethod    []SalesMethodBucket
+	ByDay       []SalesDayBucket
+}
+
+// SalesSummary aggregates payments into totals + per-method + per-day
+// buckets.  Refund_total is reported as |sum(amount<0)| (positive value)
+// so the JSON-facing handler can render symmetric numbers.
+func SalesSummary(ctx context.Context, q Querier, in SalesSummaryInput) (SalesSummaryRow, error) {
+	args := []any{in.From, in.To}
+	branchClause := ""
+	if in.BranchID != nil {
+		args = append(args, *in.BranchID)
+		branchClause = " and branch_id = $3"
+	}
+
+	// 1) Totals — single row.
+	totalsStmt := `
+		select
+			coalesce(sum(case when amount > 0 then amount else 0 end), 0)::int,
+			coalesce(sum(case when amount < 0 then -amount else 0 end), 0)::int,
+			coalesce(sum(amount), 0)::int
+		from payments
+		where paid_at between $1 and $2` + branchClause
+
+	var s SalesSummaryRow
+	if err := q.QueryRow(ctx, totalsStmt, args...).Scan(&s.GrossTotal, &s.RefundTotal, &s.NetTotal); err != nil {
+		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary totals: %w", err)
+	}
+
+	// 2) by_method.
+	methodStmt := `
+		select method,
+			coalesce(sum(case when amount > 0 then amount else 0 end), 0)::int,
+			coalesce(sum(case when amount < 0 then -amount else 0 end), 0)::int,
+			coalesce(sum(amount), 0)::int
+		from payments
+		where paid_at between $1 and $2` + branchClause + `
+		group by method
+		order by method asc`
+	rows, err := q.Query(ctx, methodStmt, args...)
+	if err != nil {
+		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_method: %w", err)
+	}
+	for rows.Next() {
+		var b SalesMethodBucket
+		if err := rows.Scan(&b.Method, &b.GrossTotal, &b.RefundTotal, &b.NetTotal); err != nil {
+			rows.Close()
+			return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_method scan: %w", err)
+		}
+		s.ByMethod = append(s.ByMethod, b)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_method rows: %w", err)
+	}
+	rows.Close()
+
+	// 3) by_day.
+	dayStmt := `
+		select paid_at,
+			coalesce(sum(case when amount > 0 then amount else 0 end), 0)::int,
+			coalesce(sum(case when amount < 0 then -amount else 0 end), 0)::int,
+			coalesce(sum(amount), 0)::int
+		from payments
+		where paid_at between $1 and $2` + branchClause + `
+		group by paid_at
+		order by paid_at asc`
+	rows, err = q.Query(ctx, dayStmt, args...)
+	if err != nil {
+		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_day: %w", err)
+	}
+	for rows.Next() {
+		var b SalesDayBucket
+		if err := rows.Scan(&b.Date, &b.GrossTotal, &b.RefundTotal, &b.NetTotal); err != nil {
+			rows.Close()
+			return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_day scan: %w", err)
+		}
+		s.ByDay = append(s.ByDay, b)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return SalesSummaryRow{}, fmt.Errorf("repo: sales summary by_day rows: %w", err)
+	}
+	rows.Close()
+
+	if s.ByMethod == nil {
+		s.ByMethod = []SalesMethodBucket{}
+	}
+	if s.ByDay == nil {
+		s.ByDay = []SalesDayBucket{}
+	}
+	return s, nil
+}
+
 // ListPaymentsByMembership returns every payment row (grants + refunds)
 // for a membership, ordered by created_at ASC so the wire payload reads
 // chronologically.

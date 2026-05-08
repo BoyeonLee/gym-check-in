@@ -142,3 +142,96 @@ func TestGetOriginalGrantPayment_NoGrant(t *testing.T) {
 		t.Errorf("expected nil, got %+v", got)
 	}
 }
+
+// TestSalesSummary_GrossRefundNetSeparation seeds a small ledger and asserts
+// gross_total / refund_total / net_total split, by_method/by_day decomposition.
+func TestSalesSummary_GrossRefundNetSeparation(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+	bid := testutil.CreateBranch(t, pool, nil)
+	mid := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: bid})
+	msid := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{MemberID: mid})
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{
+		Username: "op-summary", Role: "branch", BranchID: &bid,
+	})
+
+	d1 := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
+
+	// Day 1: cash grant 100,000 + card grant 200,000 + card refund -100,000.
+	for _, p := range []repo.PaymentRow{
+		{MembershipID: msid, BranchID: bid, Amount: 100000, Method: "cash", PaidAt: d1, PerformedBy: adminID},
+		{MembershipID: msid, BranchID: bid, Amount: 200000, Method: "card", PaidAt: d1, PerformedBy: adminID},
+		{MembershipID: msid, BranchID: bid, Amount: -100000, Method: "card", PaidAt: d1, PerformedBy: adminID},
+	} {
+		if _, err := repo.InsertPayment(ctx, pool, p); err != nil {
+			t.Fatalf("InsertPayment: %v", err)
+		}
+	}
+	// Day 2: cash grant 50,000.
+	if _, err := repo.InsertPayment(ctx, pool, repo.PaymentRow{
+		MembershipID: msid, BranchID: bid, Amount: 50000, Method: "cash", PaidAt: d2, PerformedBy: adminID,
+	}); err != nil {
+		t.Fatalf("InsertPayment: %v", err)
+	}
+
+	got, err := repo.SalesSummary(ctx, pool, repo.SalesSummaryInput{
+		From: d1, To: d2,
+	})
+	if err != nil {
+		t.Fatalf("SalesSummary: %v", err)
+	}
+	if got.GrossTotal != 350000 || got.RefundTotal != 100000 || got.NetTotal != 250000 {
+		t.Errorf("totals: gross=%d refund=%d net=%d (want 350000/100000/250000)",
+			got.GrossTotal, got.RefundTotal, got.NetTotal)
+	}
+	// by_method: expect cash grant 150000, card grant 200000 / refund 100000.
+	var cashGross, cardGross, cardRefund int
+	for _, m := range got.ByMethod {
+		switch m.Method {
+		case "cash":
+			cashGross = m.GrossTotal
+		case "card":
+			cardGross = m.GrossTotal
+			cardRefund = m.RefundTotal
+		}
+	}
+	if cashGross != 150000 || cardGross != 200000 || cardRefund != 100000 {
+		t.Errorf("by_method drift: cashGross=%d cardGross=%d cardRefund=%d", cashGross, cardGross, cardRefund)
+	}
+	// by_day: 2 buckets.
+	if len(got.ByDay) != 2 {
+		t.Errorf("expected 2 by_day rows, got %d", len(got.ByDay))
+	}
+}
+
+// TestSalesSummary_BranchFilter — branch_id parameter limits the rows.
+func TestSalesSummary_BranchFilter(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+	b1 := testutil.CreateBranch(t, pool, nil)
+	b2 := testutil.CreateBranch(t, pool, nil)
+	mid1 := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: b1})
+	mid2 := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: b2})
+	msid1 := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{MemberID: mid1})
+	msid2 := testutil.CreateMembership(t, pool, &testutil.MembershipOpts{MemberID: mid2})
+	adminID, _ := testutil.CreateAdmin(t, pool, &testutil.AdminOpts{Role: "global"})
+	d := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+
+	for _, p := range []repo.PaymentRow{
+		{MembershipID: msid1, BranchID: b1, Amount: 100000, Method: "cash", PaidAt: d, PerformedBy: adminID},
+		{MembershipID: msid2, BranchID: b2, Amount: 200000, Method: "cash", PaidAt: d, PerformedBy: adminID},
+	} {
+		if _, err := repo.InsertPayment(ctx, pool, p); err != nil {
+			t.Fatalf("InsertPayment: %v", err)
+		}
+	}
+
+	got, err := repo.SalesSummary(ctx, pool, repo.SalesSummaryInput{From: d, To: d, BranchID: &b1})
+	if err != nil {
+		t.Fatalf("SalesSummary: %v", err)
+	}
+	if got.GrossTotal != 100000 {
+		t.Errorf("expected b1-scoped gross=100000, got %d", got.GrossTotal)
+	}
+}

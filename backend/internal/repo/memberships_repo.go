@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -67,6 +68,15 @@ func scanMembership(row pgx.Row) (*MembershipRow, error) {
 	return &m, nil
 }
 
+// membershipQualifiedColumns is `membershipColumns` with each column
+// prefixed by `ms.` so JOINs against members (which carries duplicate
+// id / member_id-shaped columns) don't trip 42702 ambiguous reference.
+const membershipQualifiedColumns = `
+	ms.id, ms.member_id, ms.type, ms.months, ms.start_date, ms.end_date,
+	ms.remaining, ms.status, ms.pause_start_date, ms.pause_end_date,
+	ms.pause_used, ms.created_at, ms.updated_at
+`
+
 // GetMembership returns a single membership row scoped to the caller's
 // branch when scopeBranchID != nil. Cross-branch / member-soft-deleted /
 // missing collapse into (nil, nil) so the handler can render a 404.
@@ -78,7 +88,7 @@ func GetMembership(ctx context.Context, q Querier, id int64, scopeBranchID *int6
 		scope = " and m.branch_id = $2"
 	}
 	stmt := `
-		select ` + membershipColumns + `
+		select ` + membershipQualifiedColumns + `
 		from memberships ms
 		join members m on m.id = ms.member_id
 		where ms.id = $1 and m.deleted_at is null` + scope
@@ -303,4 +313,136 @@ func ApplyRefund(ctx context.Context, tx pgx.Tx, in RefundInput) error {
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// BulkExtendInput configures BulkExtend. BranchID and Type are optional
+// filters; soft-deleted members' memberships are always excluded. Today
+// is the KST today the caller resolved.
+type BulkExtendInput struct {
+	BranchID    *int64
+	Type        *string // "monthly" | "pass10" | nil for both
+	Days        int
+	Today       time.Time
+	Reason      string
+	PerformedBy int64
+}
+
+// BulkExtend extends every (status IN active|paused) membership matching
+// the optional filters by `Days` days, AND shifts pause_*_date forward
+// when the row is paused or has a future-scheduled pause. One
+// membership_events('bulk_extend') row is appended per touched membership.
+//
+// Returns the number of memberships modified. Errors propagate raw — the
+// handler runs them through apperr.FromDBError so an EXCLUDE collision
+// (extended end_date overlapping a future membership) surfaces 409
+// MEMBERSHIP_PERIOD_OVERLAP.
+//
+// IMPORTANT: This helper assumes it runs inside a single transaction —
+// the SELECT … FOR UPDATE on memberships locks the rows so concurrent
+// pause/grant/extend operations serialize safely. Caller MUST run inside
+// repo.WithTx so the 23P01 rollback truly rolls back every row in this
+// batch.
+func BulkExtend(ctx context.Context, tx pgx.Tx, in BulkExtendInput) (int, error) {
+	if in.Days <= 0 {
+		// Defensive: caller validates 1..90; if zero somehow leaks through
+		// it's a no-op rather than a SQL syntax error.
+		return 0, nil
+	}
+
+	// 1) Identify and lock the targets. JOIN against members so we can
+	//    exclude soft-deleted members in one round trip.
+	args := []any{}
+	conds := []string{
+		"ms.status in ('active','paused')",
+		"m.deleted_at is null",
+	}
+	if in.BranchID != nil {
+		args = append(args, *in.BranchID)
+		conds = append(conds, fmt.Sprintf("m.branch_id = $%d", len(args)))
+	}
+	if in.Type != nil {
+		args = append(args, *in.Type)
+		conds = append(conds, fmt.Sprintf("ms.type = $%d", len(args)))
+	}
+
+	stmt := `
+		select ms.id, ms.status, ms.end_date,
+		       ms.pause_start_date, ms.pause_end_date, ms.pause_used
+		from memberships ms
+		join members m on m.id = ms.member_id
+		where ` + strings.Join(conds, " and ") + `
+		order by ms.id asc
+		for update of ms
+	`
+
+	rows, err := tx.Query(ctx, stmt, args...)
+	if err != nil {
+		return 0, fmt.Errorf("repo: bulk-extend lock: %w", err)
+	}
+	type target struct {
+		id        int64
+		status    string
+		end       time.Time
+		pStart    *time.Time
+		pEnd      *time.Time
+		pauseUsed bool
+	}
+	var targets []target
+	for rows.Next() {
+		var t target
+		if err := rows.Scan(&t.id, &t.status, &t.end, &t.pStart, &t.pEnd, &t.pauseUsed); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("repo: bulk-extend scan: %w", err)
+		}
+		targets = append(targets, t)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("repo: bulk-extend rows: %w", err)
+	}
+	rows.Close()
+
+	if len(targets) == 0 {
+		return 0, nil
+	}
+
+	// 2) Apply the UPDATE per row so an EXCLUDE conflict surfaces with the
+	//    offending id readily available for the handler's response. A
+	//    single bulk UPDATE would still roll the transaction back but the
+	//    error message wouldn't carry a usable id.
+	const updStmt = `
+		update memberships
+		set end_date         = end_date + ($2::int * interval '1 day'),
+		    pause_start_date = case
+		        when status = 'paused' or
+		             (status = 'active' and pause_used = true and pause_start_date > $3::date)
+		        then pause_start_date + ($2::int * interval '1 day')
+		        else pause_start_date
+		    end,
+		    pause_end_date   = case
+		        when status = 'paused' or
+		             (status = 'active' and pause_used = true and pause_start_date > $3::date)
+		        then pause_end_date + ($2::int * interval '1 day')
+		        else pause_end_date
+		    end
+		where id = $1
+	`
+	for _, t := range targets {
+		if _, err := tx.Exec(ctx, updStmt, t.id, in.Days, in.Today); err != nil {
+			return 0, fmt.Errorf("repo: bulk-extend update id=%d: %w", t.id, err)
+		}
+	}
+
+	// 3) Append a 'bulk_extend' event per touched row.
+	const evtStmt = `
+		insert into membership_events (membership_id, action, extend_days, reason, performed_by)
+		values ($1, 'bulk_extend', $2, $3, $4)
+	`
+	for _, t := range targets {
+		if _, err := tx.Exec(ctx, evtStmt, t.id, in.Days, in.Reason, in.PerformedBy); err != nil {
+			return 0, fmt.Errorf("repo: bulk-extend event id=%d: %w", t.id, err)
+		}
+	}
+
+	return len(targets), nil
 }

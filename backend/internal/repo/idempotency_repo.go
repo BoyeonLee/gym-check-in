@@ -36,7 +36,7 @@ func FindIdempotencyKey(ctx context.Context, q Querier, key string, now time.Tim
 		       response_status, response_body, created_at
 		from idempotency_keys
 		where key = $1
-		  and created_at >= $2 - interval '24 hours'
+		  and created_at >= $2::timestamptz - interval '24 hours'
 	`
 	var r IdempotencyRow
 	err := q.QueryRow(ctx, stmt, key, now).Scan(
