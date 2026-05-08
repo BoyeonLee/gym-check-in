@@ -69,13 +69,16 @@
       "step": 8,
       "name": "batch-finalize",
       "agent": "backend",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-05-08T23:55:16+0900",
+      "completed_at": "2026-05-09T00:13:09+0900",
+      "summary": "internal/batch(4 트랜잭션 + 정리잡 3종 + Stats) + scheduler(robfig/cron/v3 KST 1 0 * * *) + cmd/server cron→HTTP→DB graceful shutdown + cmd/server batch run-expiry CLI + 통합 테스트(시계 시뮬 7 시나리오)."
     },
     {
       "step": 9,
       "name": "phase2-acceptance-audit",
       "agent": "backend",
-      "status": "deferred"
+      "status": "pending"
     }
   ],
   "created_at": "2026-05-07T13:19:08+0900"
