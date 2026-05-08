@@ -42,7 +42,7 @@
       "step": 5,
       "name": "members-kiosk",
       "agent": "backend",
-      "status": "deferred"
+      "status": "pending"
     },
     {
       "step": 6,
