@@ -34,7 +34,13 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 
-	clock := &util.FakeClock{Instant: time.Unix(1_700_000_000, 0)}
+	// Anchor the FakeClock to the wall-clock instant at fixture creation.
+	// Test seeds (factories.CreateMembership, kstAddDaysStr) compute
+	// dates from time.Now(); the handlers' KST today is derived from
+	// this Clock. Keeping them in sync is what makes the kiosk POST
+	// active-membership lock find the seeded row. Auth tests still
+	// drive determinism by Add()-ing fixed offsets to this base.
+	clock := &util.FakeClock{Instant: time.Now()}
 	uuids := &util.FakeUUIDGen{Values: []string{
 		"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 		"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",

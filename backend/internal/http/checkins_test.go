@@ -65,7 +65,7 @@ func TestCheckIn_PublicNoAuth(t *testing.T) {
 	mid, _ := activeMembership(t, f.pool, bid)
 
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -80,7 +80,7 @@ func TestCheckIn_NoActiveMembership(t *testing.T) {
 	mid := testutil.CreateMember(t, f.pool, &testutil.MemberOpts{BranchID: bid})
 
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec.Code != http.StatusUnprocessableEntity || !hasErrorCode(rec.Body.Bytes(), "NO_ACTIVE_MEMBERSHIP") {
 		t.Fatalf("expected 422 NO_ACTIVE_MEMBERSHIP, got %d body=%s", rec.Code, rec.Body.String())
@@ -103,7 +103,7 @@ func TestCheckIn_FutureStart(t *testing.T) {
 	})
 
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec.Code != http.StatusUnprocessableEntity || !hasErrorCode(rec.Body.Bytes(), "MEMBERSHIP_NOT_STARTED") {
 		t.Fatalf("expected 422 MEMBERSHIP_NOT_STARTED, got %d body=%s", rec.Code, rec.Body.String())
@@ -133,7 +133,7 @@ func TestCheckIn_PausedMembershipFails(t *testing.T) {
 	}
 
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec.Code != http.StatusUnprocessableEntity || !hasErrorCode(rec.Body.Bytes(), "NO_ACTIVE_MEMBERSHIP") {
 		t.Fatalf("paused → expected 422 NO_ACTIVE_MEMBERSHIP, got %d body=%s", rec.Code, rec.Body.String())
@@ -158,7 +158,7 @@ func TestCheckIn_KioskResponseHasNoPII(t *testing.T) {
 	})
 
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -191,13 +191,13 @@ func TestCheckIn_DoubleClickIdempotent(t *testing.T) {
 	mid, _ := activeMembership(t, f.pool, bid)
 
 	rec1 := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec1.Code != http.StatusCreated {
 		t.Fatalf("first: %d %s", rec1.Code, rec1.Body.String())
 	}
 	rec2 := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec2.Code != http.StatusCreated {
 		t.Fatalf("second: %d %s", rec2.Code, rec2.Body.String())
@@ -228,7 +228,7 @@ func TestCheckIn_Pass10DecrementsAndExpiresAtZero(t *testing.T) {
 	})
 
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid, "branchId": bid,
+		"member_id": mid, "branch_id": bid,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("first check-in: %d %s", rec.Code, rec.Body.String())
@@ -253,7 +253,7 @@ func TestCheckIn_BadInput(t *testing.T) {
 		t.Errorf("empty body: expected 400, got %d", rec.Code)
 	}
 	rec = postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": -1, "branchId": -1,
+		"member_id": -1, "branch_id": -1,
 	})
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("negative ids: expected 400, got %d", rec.Code)
@@ -282,13 +282,13 @@ func TestCheckInList_BranchScope(t *testing.T) {
 
 	// One check-in in each branch.
 	rec := postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid1, "branchId": mine,
+		"member_id": mid1, "branch_id": mine,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("mine: %d %s", rec.Code, rec.Body.String())
 	}
 	rec = postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{
-		"memberId": mid2, "branchId": other,
+		"member_id": mid2, "branch_id": other,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("other: %d %s", rec.Code, rec.Body.String())
@@ -323,8 +323,8 @@ func TestCheckInList_GlobalBranchFilter(t *testing.T) {
 	b := testutil.CreateBranch(t, f.pool, nil)
 	mA, _ := activeMembership(t, f.pool, a)
 	mB, _ := activeMembership(t, f.pool, b)
-	postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{"memberId": mA, "branchId": a})
-	postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{"memberId": mB, "branchId": b})
+	postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{"member_id": mA, "branch_id": a})
+	postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{"member_id": mB, "branch_id": b})
 
 	_, access := loginAs(t, f, "global", nil)
 	rec := postWithAuth(t, f.r, http.MethodGet,
@@ -390,7 +390,7 @@ func TestCheckInList_DailyAggregate(t *testing.T) {
 	// Two check-ins in this branch — first creates the row, the second goes
 	// through the LRU cache so it doesn't add another row. To produce two
 	// physical rows we insert the second one directly.
-	postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{"memberId": mid, "branchId": bid})
+	postWithAuth(t, f.r, http.MethodPost, "/api/check-ins", "", map[string]any{"member_id": mid, "branch_id": bid})
 
 	// Insert a second check-in row directly so daily count = 2.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

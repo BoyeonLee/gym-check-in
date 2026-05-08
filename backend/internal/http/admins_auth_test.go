@@ -44,6 +44,14 @@ func newAuthFixture(t *testing.T) *authFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 
+	// Auth-fixture clock stays anchored in the past on purpose. It drives
+	// JWT iat for tokens this fixture issues. password_updated_at is
+	// stamped via handlerNow() (real wall clock), and the
+	// stale-after-password-change check requires `iat < password_updated_at`.
+	// Anchoring iat in 2023 guarantees the gap regardless of how fast a
+	// password-change test runs (a wall-clock-now anchor would put iat
+	// and password_updated_at inside the same second and the check would
+	// erroneously pass).
 	clock := &util.FakeClock{Instant: time.Unix(1_700_000_000, 0)}
 	uuids := &util.FakeUUIDGen{Values: []string{
 		"11111111-1111-4111-8111-111111111111",

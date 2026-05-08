@@ -73,10 +73,11 @@ type kioskCheckInResponse struct {
 	Membership  kioskMembership `json:"membership"`
 }
 
-// checkInRequest is the kiosk POST body.
+// checkInRequest is the kiosk POST body. Field names are snake_case per
+// docs/API.md spec — kiosk clients send `{ "member_id", "branch_id" }`.
 type checkInRequest struct {
-	MemberID int64 `json:"memberId"`
-	BranchID int64 `json:"branchId"`
+	MemberID int64 `json:"member_id"`
+	BranchID int64 `json:"branch_id"`
 }
 
 // CreateCheckIn implements POST /api/check-ins. Order of operations:
@@ -98,7 +99,7 @@ func (h *CheckInHandlers) Create(c *gin.Context) {
 		return
 	}
 	if req.MemberID <= 0 || req.BranchID <= 0 {
-		writeError(c, apperr.New(http.StatusBadRequest, "INVALID_INPUT", "memberId/branchId required"))
+		writeError(c, apperr.New(http.StatusBadRequest, "INVALID_INPUT", "member_id/branch_id required"))
 		return
 	}
 
