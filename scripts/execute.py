@@ -655,10 +655,18 @@ class StepExecutor:
 
     # --- post-completion gates (acceptance + code-reviewer) ---
 
+    # supervisor가 직접 돌리는 검증 명령. 자식 step.md AC와 동일한 강도여야
+    # 자식의 거짓·skip 가능성을 막을 수 있다 — 자식이 통합 test를 빠뜨리고
+    # commit해도 supervisor가 같은 강도로 봐서 잡는다. Go test cache 덕에
+    # 자식이 직전에 같은 명령을 돌렸으면 두 번째는 거의 instant.
     ACCEPTANCE_CMDS = {
         "backend": [
+            ["go", "vet", "./..."],
             ["go", "build", "./..."],
-            ["go", "test", "-race", "./..."],
+            # -tags=integration: 통합 test(`//go:build integration`) 파일을
+            # 추가로 컴파일·실행. 빌드 태그 없는 단위 test도 같이 돌므로
+            # 한 번 호출로 단위+통합 모두 커버.
+            ["go", "test", "-race", "-tags=integration", "./..."],
         ],
         "frontend": [
             ["pnpm", "lint"],

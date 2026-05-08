@@ -957,14 +957,29 @@ class TestPostCompletionGate:
         (tmp_path / "backend" / "go.mod").write_text("module test\n")
         executor._which = lambda b: True
         with patch("execute.subprocess.run") as mock_run:
-            # go build 통과, go test 실패
+            # go vet PASS, go build PASS, go test 실패
             mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=0, stdout="", stderr=""),
                 MagicMock(returncode=1, stdout="FAIL", stderr="test failed"),
             ]
             gate, msg = executor._post_completion_gate("backend", str(tmp_path))
         assert gate == "retry"
         assert "acceptance" in msg
+
+    def test_backend_retry_on_go_vet_fail(self, executor, tmp_path):
+        """go vet 단계가 첫 번째 — vet 실패 시 build/test는 안 돌고 즉시 retry."""
+        (tmp_path / "backend").mkdir()
+        (tmp_path / "backend" / "go.mod").write_text("module test\n")
+        executor._which = lambda b: True
+        with patch("execute.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=1, stdout="", stderr="vet warning"),
+            ]
+            gate, msg = executor._post_completion_gate("backend", str(tmp_path))
+        assert gate == "retry"
+        assert "acceptance" in msg
+        assert "vet" in msg
 
     def test_review_block_returns_retry(self, executor):
         executor._run_acceptance = lambda agent, cwd: (True, "")
