@@ -42,7 +42,10 @@
       "step": 5,
       "name": "members-kiosk",
       "agent": "backend",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-05-08T10:02:45+0900",
+      "completed_at": "2026-05-08T11:05:00+0900",
+      "summary": "공용 cursor 헬퍼(EncodeCursor/DecodeCursor/ParseLimit) + members CRUD(cursor 페이지·branch_name·PATCH 화이트리스트) + members 단건(active+이력+결제, memberships/payments는 step6 의존으로 부분 구현) + 키오스크 검색(mode=name/phone/memberId·활성 회원권 필터·마스킹·truncated) + today-count + GET /api/branches 공개 그룹 이동(49dffe7). reviewer BLOCK 3건(응답 키 items, INVALID_PHONE_QUERY/INVALID_MEMBER_ID 분리, KST AT TIME ZONE 자정 버그) 보정 후 PASS(8af039d). execute.py 60턴 max-turns 도달 → 자식이 worktree에 commit하고 status를 박았으나 main worktree와 격리되어 부모가 error로 판정 → 수동 보정."
     },
     {
       "step": 6,

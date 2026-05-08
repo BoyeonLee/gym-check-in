@@ -194,10 +194,10 @@ LIMIT 21;
 - query: `branchId`, `mode=name|phone|memberId`, `q`.
 - 검증:
   - `mode=name`: `len(q) >= 2` (UTF-8 rune 기준) — 미달 시 400 `QUERY_TOO_SHORT`.
-  - `mode=phone`: `q` 정확 4자리 숫자 → 미달 시 400 `INVALID_INPUT`.
-  - `mode=memberId`: `q`가 양의 정수 파싱 → 실패 시 400 `INVALID_INPUT`.
-  - `mode` 외 값 → 400 `INVALID_INPUT`.
-- 응답: `{ results: [{id, name, phone_masked, birth_md, member_id_display}], truncated: bool }`
+  - `mode=phone`: `q` 정확 4자리 숫자 → 미달 시 400 `INVALID_PHONE_QUERY` (docs/API.md 카탈로그).
+  - `mode=memberId`: `q`가 양의 정수 파싱 → 실패 시 400 `INVALID_MEMBER_ID` (docs/API.md 카탈로그).
+  - `mode` 외 값 / `branchId` 누락 → 400 `INVALID_INPUT`.
+- 응답: `{ items: [{id, name, phone_masked, birth_md, member_id_display}], truncated: bool }` (docs/API.md 명세 그대로 — `results` 아님).
 - **마스킹 헬퍼** (`internal/util/mask.go` 새로 추가):
   - `MaskPhone(phone)`: 입력은 11자리 숫자 문자열. 출력은 `010-****-1234` 형식(앞 3자리 + 가운데 4자리 마스킹 + 뒤 4자리 그대로). 길이 11 미만이면 에러 반환.
   - `MaskBirthMD(date)`: 입력 `time.Time`. 출력은 `**-MM-DD` 형식(연도 마스킹).

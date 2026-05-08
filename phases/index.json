@@ -1,6 +1,12 @@
 {
   "phases": [
-    { "dir": "phase1-db-init", "status": "completed" },
-    { "dir": "phase2-backend-scaffold", "status": "pending" }
+    {
+      "dir": "phase1-db-init",
+      "status": "completed"
+    },
+    {
+      "dir": "phase2-backend-scaffold",
+      "status": "pending"
+    }
   ]
 }
