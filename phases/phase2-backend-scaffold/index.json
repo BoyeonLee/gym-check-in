@@ -78,13 +78,16 @@
       "step": 9,
       "name": "phase2-acceptance-audit",
       "agent": "backend",
-      "status": "deferred"
+      "status": "pending"
     },
     {
       "step": 10,
       "name": "memberships-http",
       "agent": "backend",
-      "status": "pending"
+      "status": "completed",
+      "started_at": "2026-05-11T11:19:14+0900",
+      "completed_at": "2026-05-11T11:38:41+0900",
+      "summary": "step6 회귀 보강 — internal/http/memberships.go 신설(grant/get-detail/pause/unpause/cancel-pause/refund 6개 핸들러) + cmd/server/main.go 라우트 등록 + e2e 테스트(internal/http/memberships_test.go). repo 레이어(memberships/payments/events/idempotency)는 step6에 이미 존재."
     }
   ],
   "created_at": "2026-05-07T13:19:08+0900"
