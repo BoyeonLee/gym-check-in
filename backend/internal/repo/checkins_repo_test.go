@@ -317,3 +317,52 @@ func TestListCheckInsDaily_GroupsByMemberAndKstDate(t *testing.T) {
 		t.Errorf("first_checked_in_at zero: %+v", r)
 	}
 }
+
+// TestDoCheckIn_RejectsForeignBranch — DoCheckIn locks the active membership
+// scoped to (member_id, branch_id) so a forged request that names a foreign
+// branch_id must yield pgx.ErrNoRows (handler maps to 422
+// NO_ACTIVE_MEMBERSHIP without revealing that the membership exists in
+// another branch). Backend boundary rule from backend/CLAUDE.md "체크인".
+func TestDoCheckIn_RejectsForeignBranch(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.SetupDB(t)
+
+	branchA := testutil.CreateBranch(t, pool, nil)
+	branchB := testutil.CreateBranch(t, pool, nil)
+	// Member + active membership belong to branch A.
+	mid := testutil.CreateMember(t, pool, &testutil.MemberOpts{BranchID: branchA})
+	today := kstToday()
+	one := 1
+	_ = testutil.CreateMembership(t, pool, &testutil.MembershipOpts{
+		MemberID:  mid,
+		Type:      "monthly",
+		Months:    &one,
+		StartDate: today.Format("2006-01-02"),
+		EndDate:   today.AddDate(0, 1, 0).Format("2006-01-02"),
+		Status:    "active",
+	})
+
+	// Calling DoCheckIn with branch B must return ErrNoRows even though
+	// the member's branch A membership is otherwise eligible.
+	err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		_, err := repo.DoCheckIn(ctx, tx, repo.CheckInInput{
+			MemberID: mid, BranchID: branchB, Today: today,
+		})
+		return err
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("expected pgx.ErrNoRows for foreign branch, got %v", err)
+	}
+
+	// Sanity — same call against the correct branch A succeeds, proving
+	// the membership itself is checkin-eligible (so the rejection above
+	// really comes from the branch boundary, not some unrelated reason).
+	if err := repo.WithTx(ctx, pool, func(tx pgx.Tx) error {
+		_, err := repo.DoCheckIn(ctx, tx, repo.CheckInInput{
+			MemberID: mid, BranchID: branchA, Today: today,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("expected branch-A check-in to succeed, got %v", err)
+	}
+}

@@ -121,8 +121,10 @@ func TestListPaymentsByMembership_OrderingIncludesRefund(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	if rows[0].Amount != 150000 || rows[1].Amount != -150000 {
-		t.Errorf("unexpected ordering: %+v", rows)
+	// DESC by paid_at — the day2 refund row is newer so it sits at
+	// index 0 (per docs/API.md GET /api/memberships/:id).
+	if rows[0].Amount != -150000 || rows[1].Amount != 150000 {
+		t.Errorf("unexpected ordering (want DESC newest-first): %+v", rows)
 	}
 }
 

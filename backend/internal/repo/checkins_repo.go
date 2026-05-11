@@ -59,21 +59,30 @@ type CheckInResult struct {
 func DoCheckIn(ctx context.Context, tx pgx.Tx, in CheckInInput) (CheckInResult, error) {
 	// 1) Lock the covering active membership. The SQL uses the caller's
 	//    KST `today` for both bounds so the lock is deterministic
-	//    regardless of the session timezone.
+	//    regardless of the session timezone. The members JOIN enforces the
+	//    branch boundary — memberships has no branch_id column so we anchor
+	//    via members.branch_id (and skip soft-deleted members). A forged
+	//    request with a foreign branch_id can no longer lock another
+	//    branch's active membership; the caller sees pgx.ErrNoRows and the
+	//    handler maps that to NO_ACTIVE_MEMBERSHIP without leaking that the
+	//    membership exists in a different branch.
 	const lockStmt = `
-		select id, member_id, type, months, start_date, end_date,
-		       remaining, status, pause_start_date, pause_end_date,
-		       pause_used, created_at, updated_at
-		from memberships
-		where member_id = $1
-		  and status   = 'active'
-		  and start_date <= $2::date
-		  and end_date   >= $2::date
-		order by end_date asc, id asc
-		for update
+		select ms.id, ms.member_id, ms.type, ms.months, ms.start_date, ms.end_date,
+		       ms.remaining, ms.status, ms.pause_start_date, ms.pause_end_date,
+		       ms.pause_used, ms.created_at, ms.updated_at
+		from memberships ms
+		join members m on m.id = ms.member_id
+		where ms.member_id = $1
+		  and m.branch_id  = $3
+		  and m.deleted_at is null
+		  and ms.status    = 'active'
+		  and ms.start_date <= $2::date
+		  and ms.end_date   >= $2::date
+		order by ms.end_date asc, ms.id asc
+		for update of ms
 		limit 1
 	`
-	m, err := scanMembership(tx.QueryRow(ctx, lockStmt, in.MemberID, in.Today))
+	m, err := scanMembership(tx.QueryRow(ctx, lockStmt, in.MemberID, in.Today, in.BranchID))
 	if err != nil {
 		return CheckInResult{}, fmt.Errorf("repo: lock active membership: %w", err)
 	}

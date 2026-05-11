@@ -54,14 +54,17 @@ func TestInsertEvent_PauseAndUnpauseRoundtrip(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(rows))
 	}
-	if rows[0].Action != "pause" || rows[1].Action != "unpause" {
-		t.Errorf("unexpected ordering: %+v", rows)
+	// DESC ordering — newest first (per docs/API.md GET
+	// /api/memberships/:id contract). The unpause was inserted second so
+	// it sits at index 0; the original pause is at index 1.
+	if rows[0].Action != "unpause" || rows[1].Action != "pause" {
+		t.Errorf("unexpected ordering (want DESC newest-first): %+v", rows)
 	}
-	if rows[0].PauseStartDate == nil || !rows[0].PauseStartDate.Equal(pauseStart) {
-		t.Errorf("pause_start drift: %+v", rows[0].PauseStartDate)
+	if rows[1].PauseStartDate == nil || !rows[1].PauseStartDate.Equal(pauseStart) {
+		t.Errorf("pause_start drift: %+v", rows[1].PauseStartDate)
 	}
-	if rows[1].ActualPauseEnd == nil || !rows[1].ActualPauseEnd.Equal(actualEnd) {
-		t.Errorf("actual_pause_end drift: %+v", rows[1].ActualPauseEnd)
+	if rows[0].ActualPauseEnd == nil || !rows[0].ActualPauseEnd.Equal(actualEnd) {
+		t.Errorf("actual_pause_end drift: %+v", rows[0].ActualPauseEnd)
 	}
 }
 

@@ -246,14 +246,15 @@ func SalesSummary(ctx context.Context, q Querier, in SalesSummaryInput) (SalesSu
 }
 
 // ListPaymentsByMembership returns every payment row (grants + refunds)
-// for a membership, ordered by created_at ASC so the wire payload reads
-// chronologically.
+// for a membership, ordered by paid_at DESC (id DESC tiebreaker) so the
+// wire payload reads newest-first per docs/API.md GET
+// /api/memberships/:id and GET /api/members/:id contracts.
 func ListPaymentsByMembership(ctx context.Context, q Querier, membershipID int64) ([]PaymentRow, error) {
 	const stmt = `
 		select ` + paymentColumns + `
 		from payments
 		where membership_id = $1
-		order by created_at asc, id asc
+		order by paid_at desc, id desc
 	`
 	rows, err := q.Query(ctx, stmt, membershipID)
 	if err != nil {
