@@ -78,6 +78,12 @@
       "step": 9,
       "name": "phase2-acceptance-audit",
       "agent": "backend",
+      "status": "deferred"
+    },
+    {
+      "step": 10,
+      "name": "memberships-http",
+      "agent": "backend",
       "status": "pending"
     }
   ],
