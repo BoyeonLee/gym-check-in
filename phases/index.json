@@ -8,6 +8,10 @@
       "dir": "phase2-backend-scaffold",
       "status": "completed",
       "completed_at": "2026-05-11T12:22:53+0900"
+    },
+    {
+      "dir": "phase3-frontend",
+      "status": "pending"
     }
   ]
 }

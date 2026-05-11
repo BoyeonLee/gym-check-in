@@ -1,0 +1,127 @@
+{
+  "project": "gym-check-in",
+  "phase": "phase3-frontend",
+  "steps": [
+    {
+      "step": 1,
+      "name": "shared-frontend-prep",
+      "agent": "shared",
+      "status": "pending",
+      "depends_on": [],
+      "summary": "docs/ROADMAP.md Phase 3 정의 확장(스캐폴드→화면 구현+자동 테스트까지) + docs/ADR.md ADR-008 라이브러리 화이트리스트에 React 18, TypeScript strict, Tailwind, React Router, TanStack Query, Vitest, MSW, vite-plugin-pwa, Playwright 추가 + frontend/ui-design 참조 규칙 명시."
+    },
+    {
+      "step": 2,
+      "name": "scaffold",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [1],
+      "summary": "Vite + React 18 + TypeScript(strict) + Tailwind + React Router + TanStack Query + vite-plugin-pwa 골격. frontend/ui-design/styles.css의 CSS 변수를 src/styles/tokens.css로 복사. .env.example(VITE_API_URL). 빈 라우트 트리(/, /kiosk/*, /admin/*)."
+    },
+    {
+      "step": 3,
+      "name": "api-client",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [2],
+      "summary": "src/api/client.ts fetch 래퍼(JSON 헤더, 401 자동 refresh 재시도, 에러 정규화) + AuthContext(access/refresh JWT localStorage + must_change_password 분기) + BranchContext(localStorage.branchId) + useIdempotencyKey + useIdleTimeout(10s) 훅. MSW 셋업."
+    },
+    {
+      "step": 4,
+      "name": "admin-auth-screens",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [3],
+      "summary": "관리자 Login(잠금 카운트다운·TEMP_PASSWORD_EXPIRED 분기) + PasswordChange(강도 검증·비번 변경 후 자동 로그아웃) + 보호 라우트 + 전역 메뉴 가드(role='global'만 Sales/BulkExtend/Branches 노출)."
+    },
+    {
+      "step": 5,
+      "name": "kiosk-shell",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [3],
+      "summary": "BranchSetup(지점 선택+관리자 인증) + Idle(today-count 표시) + 키오스크 풀스크린·touch-action·5초 롱프레스로 BranchSetup 진입 + idle 타임아웃 적용 기반. localStorage.branchId 미설정 시 /kiosk/setup 리다이렉트."
+    },
+    {
+      "step": 6,
+      "name": "kiosk-search",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [5],
+      "summary": "InputSelect(음성/타이핑 분기, Web Speech 미지원 시 음성 비활성) + VoiceSearch(useSpeechRecognition 훅, 3회 실패 → 타이핑 폴백, NotAllowedError 폴백) + TypingSearch 3탭(이름/전화4자리/회원번호) + truncated 배너."
+    },
+    {
+      "step": 7,
+      "name": "kiosk-checkin",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [6],
+      "summary": "MemberPick(마스킹 표시: 010-****-1234·**-04-15·#1234, 결과 0건 안내 → Idle 복귀, 1명이면 자동 다음 단계) + CheckInDone(타임아웃 후 Idle) + 체크인 API 호출 + MEMBERSHIP_NOT_STARTED 422 분기 + today-count invalidate."
+    },
+    {
+      "step": 8,
+      "name": "admin-members",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [4],
+      "summary": "회원 목록(cursor 페이지·branch_name·무한 스크롤) + 등록 폼(이름·전화 11자리·생년월일·지점) + 수정 폼(이름·전화·생년월일만, branch_id 비활성) + 회원 상세(active 회원권 카드 + 회원권 이력 + 결제 이력 한 화면)."
+    },
+    {
+      "step": 9,
+      "name": "admin-membership-detail-grant",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [8],
+      "summary": "회원권 상세 페이지(GET /api/memberships/:id) + 부여 폼(monthly+months 프리셋/pass10, 결제 amount>0 정수·method, Idempotency-Key, 미리등록·만료일 미리보기, INVALID_START_DATE·MEMBERSHIP_PERIOD_OVERLAP 폴백)."
+    },
+    {
+      "step": 10,
+      "name": "admin-membership-pause-refund",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [9],
+      "summary": "정지 폼(pause_used=true면 비활성, 미래 예약 허용) + 조기 활성화(unpause, confirm 모달) + 미래 정지 취소(cancel-pause) + 환불 폼(Idempotency-Key, 자동 채움 미리보기, MEMBERSHIP_ALREADY_EXPIRED 분기)."
+    },
+    {
+      "step": 11,
+      "name": "admin-checkins-sales",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [4],
+      "summary": "체크인 이력(cursor 페이지·raw|daily 모드 토글·daily는 최대 92일·RANGE_TOO_LARGE 폴백) + 매출 요약(전역 전용·gross/refund/net 카드 3개·by_method/by_day 분리표)."
+    },
+    {
+      "step": 12,
+      "name": "admin-bulk-branches",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [4],
+      "summary": "BulkExtend.tsx(전역, days 1~90 정수, Idempotency-Key, MEMBERSHIP_PERIOD_OVERLAP 시 first_conflict_membership_id 표시) + Branches CRUD(전역, ADDRESS_DUPLICATE·BRANCH_IN_USE 분기)."
+    },
+    {
+      "step": 13,
+      "name": "admin-admins",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [4],
+      "summary": "Admins/ 목록·생성·수정(username/role/branch_id, 본인 role/branch_id 비활성)·삭제(soft, 본인 차단)·비번 리셋(임시비번 1회 표시+복사·expires_at·로그 미노출)."
+    },
+    {
+      "step": 14,
+      "name": "pwa-tests-finalize",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [7, 10, 11, 12, 13],
+      "summary": "manifest.webmanifest 마무리(사용자 제공 PWA 아이콘 192/512/maskable 연결, display: fullscreen, start_url) + Vitest 단위/컴포넌트 테스트(훅·API 래퍼·마스킹·폼 검증) + 빌드 산출물 검증."
+    },
+    {
+      "step": 15,
+      "name": "e2e-playwright",
+      "agent": "frontend",
+      "status": "pending",
+      "depends_on": [14],
+      "summary": "Playwright 셋업 + 핵심 골든 패스 시나리오 12~15개(로그인·비번변경·잠금·회원등록→부여→체크인→매출·정지·환불·키오스크 검색→체크인→오늘카운트·truncated 배너·MEMBERSHIP_NOT_STARTED·롱프레스·idle 타임아웃·토큰 자동 refresh)."
+    }
+  ],
+  "created_at": "2026-05-11T17:00:00+0900"
+}
