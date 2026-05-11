@@ -809,13 +809,20 @@ class StepExecutor:
             print(f"  WARN: review dump 실패: {e}")
 
     def _post_completion_gate(self, agent: str, cwd: str,
-                               step_num: Optional[int] = None) -> tuple[str, str]:
+                               step_num: Optional[int] = None,
+                               head_before: Optional[str] = None) -> tuple[str, str]:
         """completed 직후 acceptance + review를 실행.
 
         반환:
             ("pass", "")               — 양쪽 모두 통과
             ("retry", error_message)   — 실패, retry로
             ("block", reason)          — 도구 부재 등 사용자 개입 필요
+
+        backend/frontend agent의 경우, acceptance/review를 모두 통과해도
+        자식이 commit을 새로 만들지 않았다면 false-pass로 간주해 retry로 분류한다.
+        (acceptance는 step1~N-1 코드만으로도 PASS하고, reviewer도 "변경 없음 = PASS"
+        응답할 수 있어, 자식이 0 commit으로 종료한 경우를 막지 못하는 함정이 있다.
+        2026-05-11 step9 retry에서 발생.)
         """
         ok, msg = self._run_acceptance(agent, cwd)
         if not ok:
@@ -828,7 +835,26 @@ class StepExecutor:
             if "claude" in msg and "command not found" in msg.lower():
                 return "block", "code-reviewer 호출 실패: claude CLI를 찾을 수 없음"
             return "retry", msg
+        if agent in ("backend", "frontend") and head_before is not None:
+            head_after = self._git_head(cwd)
+            if head_after and head_before == head_after:
+                return "retry", (
+                    "자식 Claude가 commit을 새로 만들지 않음 (HEAD before == after). "
+                    "step.md 정책상 commit 없이 종료한 경우 사용자 개입이 필요하거나 "
+                    "자식이 작업을 누락했을 가능성. 자식 stdout 출력과 step.md를 "
+                    "확인 후 status를 pending으로 복구하거나 step 분할을 재검토하라."
+                )
         return "pass", ""
+
+    def _git_head(self, cwd: str) -> str:
+        """cwd의 현재 git HEAD SHA. 비정상이면 빈 문자열."""
+        try:
+            r = self._run_git("rev-parse", "HEAD", cwd=cwd)
+            if r.returncode == 0:
+                return r.stdout.strip()
+        except Exception:
+            pass
+        return ""
 
     def _read_step_summary(self, step_num: int) -> str:
         """step.md frontmatter에서 summary 값을 읽는다.
@@ -874,6 +900,7 @@ class StepExecutor:
             if attempt > 1:
                 tag += f" [retry {attempt}/{self.MAX_RETRIES}]"
 
+            head_before = self._git_head(cwd) if agent in ("backend", "frontend") else None
             with progress_indicator(tag) as pi:
                 self._invoke_claude(step, preamble, cwd=cwd, agent=agent)
                 elapsed = int(pi.elapsed)
@@ -906,7 +933,9 @@ class StepExecutor:
             # acceptance(빌드/테스트) + code-reviewer gate.
             # 자식이 정상 종료(exit 0) 했어도 빌드 깨지거나 reviewer BLOCK이면 retry.
             # 자식이 비정상 종료(max-turns 등) 했어도 코드 commit이 살아 있으면 PASS 가능.
-            gate, gate_msg = self._post_completion_gate(agent, cwd, step_num=step_num)
+            gate, gate_msg = self._post_completion_gate(
+                agent, cwd, step_num=step_num, head_before=head_before
+            )
 
             if gate == "block":
                 for s in index["steps"]:

@@ -1005,6 +1005,82 @@ class TestPostCompletionGate:
             gate, msg = executor._post_completion_gate("backend", "/tmp")
         assert gate == "retry"
 
+    # --- false-pass 가드 (자식 0 commit + reviewer PASS 함정) ---
+
+    def test_backend_no_new_commit_returns_retry(self, executor):
+        """backend agent: acceptance/review 모두 PASS여도 자식이 commit을
+        새로 만들지 않았으면(HEAD before == after) retry로 분류해야 한다.
+        (2026-05-11 step9 1차 실행에서 발생한 false-pass 함정.)"""
+        executor._run_acceptance = lambda agent, cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
+        executor._git_head = lambda cwd: "abc123"  # before와 after가 같은 SHA
+        gate, msg = executor._post_completion_gate(
+            "backend", "/tmp", head_before="abc123"
+        )
+        assert gate == "retry"
+        assert "commit" in msg
+
+    def test_backend_new_commit_returns_pass(self, executor):
+        """backend agent: 자식이 commit을 새로 만들었으면(HEAD 변경) PASS."""
+        executor._run_acceptance = lambda agent, cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
+        executor._git_head = lambda cwd: "def456"  # after는 다른 SHA
+        gate, msg = executor._post_completion_gate(
+            "backend", "/tmp", head_before="abc123"
+        )
+        assert gate == "pass"
+
+    def test_frontend_no_new_commit_returns_retry(self, executor):
+        """가드는 frontend agent에도 같은 방식으로 적용된다."""
+        executor._run_acceptance = lambda agent, cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
+        executor._git_head = lambda cwd: "same-sha"
+        gate, msg = executor._post_completion_gate(
+            "frontend", "/tmp", head_before="same-sha"
+        )
+        assert gate == "retry"
+        assert "commit" in msg
+
+    def test_shared_agent_skips_commit_guard(self, executor):
+        """shared agent는 가드 미적용 — 메인 세션이 메타만 만지는 정상 흐름이라
+        worktree commit이 없을 수 있다."""
+        executor._run_review = lambda cwd, step_num=None: (True, "")
+        executor._git_head = lambda cwd: "same-sha"
+        gate, msg = executor._post_completion_gate(
+            "shared", "/tmp", head_before="same-sha"
+        )
+        assert gate == "pass"
+
+    def test_backend_legacy_call_without_head_before_passes(self, executor):
+        """head_before=None(생략)이면 가드를 적용하지 않는다 — 기존 호출자
+        호환성 유지."""
+        executor._run_acceptance = lambda agent, cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
+        gate, msg = executor._post_completion_gate("backend", "/tmp")
+        assert gate == "pass"
+
+    def test_git_head_returns_empty_on_failure(self, executor):
+        """_git_head: rev-parse 실패면 빈 문자열."""
+        with patch.object(executor, "_run_git") as mock:
+            mock.return_value = MagicMock(returncode=128, stdout="", stderr="not a git repo")
+            assert executor._git_head("/tmp") == ""
+
+    def test_git_head_returns_sha_on_success(self, executor):
+        with patch.object(executor, "_run_git") as mock:
+            mock.return_value = MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            assert executor._git_head("/tmp") == "abc123"
+
+    def test_backend_empty_head_after_skips_guard(self, executor):
+        """head_after가 빈 문자열이면(rev-parse 실패) 가드 trigger되지 않음 —
+        false-positive로 정상 PASS를 막지 않기 위한 안전판."""
+        executor._run_acceptance = lambda agent, cwd: (True, "")
+        executor._run_review = lambda cwd, step_num=None: (True, "")
+        executor._git_head = lambda cwd: ""  # rev-parse 실패 시뮬
+        gate, msg = executor._post_completion_gate(
+            "backend", "/tmp", head_before="abc123"
+        )
+        assert gate == "pass"
+
 
 # ---------------------------------------------------------------------------
 # step.md frontmatter 검증
