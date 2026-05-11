@@ -520,6 +520,7 @@ KST 기준 오늘 해당 지점 체크인 row 수: `WHERE branch_id = ? AND (che
 | `WRONG_CURRENT_PASSWORD` | 401 | 비번 변경 시 현재 비번 불일치 |
 | `MUST_CHANGE_PASSWORD` | 403 | 강제 변경 화면 외 라우트 차단 |
 | `FORBIDDEN` | 403 | 권한 없음(예: branch가 global 라우트 호출) |
+| `NOT_FOUND` | 404 | 리소스 미존재·soft-deleted·다른 지점 자원에 대한 지점 관리자 접근(존재 노출 방지로 403이 아닌 404 통일) |
 | `RATE_LIMITED` | 429 | IP 단위 rate limit 초과 |
 | `BODY_TOO_LARGE` | 400 | 요청 본문이 1MB 초과 (gin.MaxBytesReader가 reader 단계에서 차단) |
 | `WEAK_PASSWORD` | 400 | 비번 8자 미만 또는 영문/숫자 미혼합 |
