@@ -391,3 +391,109 @@ class TestPathPriorityAgentDetection:
         # 그러나 일반 흐름에서 backend cwd의 자식 Claude는 .worktrees/frontend
         # path를 만들 일이 없고, 만들면 그건 명백한 의도이므로 허용.
         assert rc == 0, f"expected allow (path 우선), got rc={rc} stderr={stderr}"
+
+
+# === backend/frontend agent가 phases/ 안에서 만질 수 있는 범위 ===
+#
+# 정책(2026-05-11 보강): phases/ 안의 audit 산출물(PHASE2_AC.md 등)은 자식이
+# 만들 수 있어야 자연스럽지만, status/summary 박는 메타(index.json, step*.md,
+# *-output.json, *-review.txt)는 여전히 execute.py·메인의 책임이라 차단한다.
+# (옛 자식이 메타를 worktree에서 박았다가 main과 격리되어 retry 폭주에 빠진
+# step5 사고가 이 분리 정책의 동기.)
+
+class TestBackendPhasesAccess:
+    def _cwd(self, fake_project):
+        return str(fake_project / ".worktrees" / "backend")
+
+    def test_allow_phases_audit_md(self, fake_project):
+        """audit 산출물(.md)은 자식이 phases/ 안에 만들 수 있다."""
+        cwd = self._cwd(fake_project)
+        phase_dir = fake_project / "phases" / "phase2-backend-scaffold"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "PHASE2_AC.md")
+        rc, stderr = _run(path, cwd)
+        assert rc == 0, f"expected allow, got rc={rc} stderr={stderr}"
+
+    def test_allow_phases_arbitrary_artifact(self, fake_project):
+        """audit 외 자유 산출물(분석 메모 등)도 자식이 둘 수 있다."""
+        cwd = self._cwd(fake_project)
+        phase_dir = fake_project / "phases" / "phase3-x"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "investigation.md")
+        rc, stderr = _run(path, cwd)
+        assert rc == 0
+
+    def test_block_phases_top_level_index(self, fake_project):
+        """phases/index.json (top-level)은 execute.py 전담 → 차단."""
+        cwd = self._cwd(fake_project)
+        path = str(fake_project / "phases" / "index.json")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2 and "BLOCKED" in stderr
+
+    def test_block_phases_step_index(self, fake_project):
+        """phases/<phase>/index.json (step 인덱스)은 execute.py 전담 → 차단."""
+        cwd = self._cwd(fake_project)
+        phase_dir = fake_project / "phases" / "phase2-backend-scaffold"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "index.json")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2 and "BLOCKED" in stderr
+
+    def test_block_phases_step_md(self, fake_project):
+        """phases/<phase>/step<N>.md (step 명세)는 메인이 작성 → 자식 차단."""
+        cwd = self._cwd(fake_project)
+        phase_dir = fake_project / "phases" / "phase2-backend-scaffold"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "step9.md")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2 and "BLOCKED" in stderr
+
+    def test_block_phases_output_json(self, fake_project):
+        """phases/<phase>/<step>-output.json은 execute.py dump → 차단."""
+        cwd = self._cwd(fake_project)
+        phase_dir = fake_project / "phases" / "phase2-backend-scaffold"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "step9-output.json")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2 and "BLOCKED" in stderr
+
+    def test_block_phases_review_txt(self, fake_project):
+        """phases/<phase>/<step>-review.txt도 execute.py dump → 차단."""
+        cwd = self._cwd(fake_project)
+        phase_dir = fake_project / "phases" / "phase2-backend-scaffold"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "step9-review.txt")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2 and "BLOCKED" in stderr
+
+    def test_frontend_allow_phases_audit(self, fake_project):
+        """frontend agent도 같은 정책 — audit 산출물 허용."""
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        phase_dir = fake_project / "phases" / "phase3-fe"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "PHASE3_FE_AC.md")
+        rc, stderr = _run(path, cwd)
+        assert rc == 0
+
+    def test_frontend_block_phases_index(self, fake_project):
+        cwd = str(fake_project / ".worktrees" / "frontend")
+        phase_dir = fake_project / "phases" / "phase3-fe"
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        path = str(phase_dir / "index.json")
+        rc, stderr = _run(path, cwd)
+        assert rc == 2
+
+    def test_meta_pattern_matches(self):
+        """_is_phases_metadata 단위 확인 — 정규식이 양/음성 케이스 분리."""
+        from precheck_path import _is_phases_metadata as is_meta
+        assert is_meta("phases/index.json")
+        assert is_meta("phases/phase2/index.json")
+        assert is_meta("phases/phase2/step9.md")
+        assert is_meta("phases/phase2/step10.md")
+        assert is_meta("phases/phase2/step9-output.json")
+        assert is_meta("phases/phase2/step9-review.txt")
+        # 음성
+        assert not is_meta("phases/phase2/PHASE2_AC.md")
+        assert not is_meta("phases/phase2/notes.md")
+        assert not is_meta("phases/phase2/results.json")  # output/review 아님
+        assert not is_meta("phases/phase2/sub/index.json")  # 더 깊은 nested는 메타 아님
