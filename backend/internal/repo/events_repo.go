@@ -53,8 +53,8 @@ func InsertEvent(ctx context.Context, q Querier, in EventRow) error {
 }
 
 // ListEventsByMembership returns every ledger row for the membership in
-// chronological order so the UI history table reads top-to-bottom oldest
-// to newest.
+// reverse-chronological order so the UI history table reads top-to-bottom
+// newest to oldest (per docs/API.md GET /api/memberships/:id contract).
 func ListEventsByMembership(ctx context.Context, q Querier, membershipID int64) ([]EventRow, error) {
 	const stmt = `
 		select id, membership_id, action,
@@ -63,7 +63,7 @@ func ListEventsByMembership(ctx context.Context, q Querier, membershipID int64) 
 		       reason, performed_by, created_at
 		from membership_events
 		where membership_id = $1
-		order by created_at asc, id asc
+		order by created_at desc, id desc
 	`
 	rows, err := q.Query(ctx, stmt, membershipID)
 	if err != nil {
