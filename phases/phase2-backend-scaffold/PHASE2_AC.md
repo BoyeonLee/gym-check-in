@@ -2,7 +2,7 @@
 
 `docs/ROADMAP.md` Phase 2 "검증 기준" 전체를 backend 테스트 코드와 매핑한다. 각 체크 항목 줄 끝의 주석 토큰은 해당 검증을 책임지는 실제 테스트 위치를 가리킨다.
 
-이 문서는 step9의 자가 점검 산출물이며, `backend/` 안에 둔다(`docs/`는 shared 영역이라 step9에서 수정 불가).
+이 문서는 step9의 자가 점검 산출물이다. step9 시점엔 backend agent가 worktree에서 만들어야 하는 hook 정책 때문에 `backend/PHASE2_AC.md`로 작성됐지만, phase 종료 후 spec drift 검증·매핑 갱신을 메인 세션이 직접 할 수 있도록 `phases/phase2-backend-scaffold/`로 이동했다(2026-05-11 postaudit). 검증 스크립트의 `backend/<file>` prefix는 그대로 유효 — 매핑이 가리키는 테스트 파일은 여전히 `backend/internal/...` 경로다.
 
 매핑 규칙: 체크 항목 줄 끝에는 정확히 한 번 매핑 토큰을 넣는다. 본 문서의 prose에는 매핑 토큰 키워드를 다시 등장시키지 않는다(검증 스크립트가 prose를 가짜 양성으로 잡지 않도록).
 
@@ -127,6 +127,8 @@
 - [x] 다른 지점 회원권 환불 → 404 (step6+step10)  // covered: internal/http/memberships_test.go:TestMembership_Refund_OtherBranch_404
 - [x] memberships 라우트는 미인증 시 401 (step6+step10)  // covered: internal/http/memberships_test.go:TestMembership_NoAuth_401
 - [x] must_change_password=true 토큰은 memberships 라우트 차단 (step6+step10)  // covered: internal/http/memberships_test.go:TestMembership_MustChangePasswordBlocks
+- [x] events_repo.ListEventsByMembership 정렬 created_at DESC (postaudit, API.md L302 정합)  // covered: internal/repo/events_repo_test.go:TestInsertEvent_PauseAndUnpauseRoundtrip
+- [x] payments_repo.ListPaymentsByMembership 정렬 paid_at DESC (postaudit, API.md L246·L301 정합)  // covered: internal/repo/payments_repo_test.go:TestListPaymentsByMembership_OrderingIncludesRefund
 
 ## 체크인
 
@@ -150,6 +152,7 @@
 - [x] repo DoCheckIn 같은 날 두 번째는 차감 없음 (step7)  // covered: internal/repo/checkins_repo_test.go:TestDoCheckIn_SameDayTwice_DoesNotDecrementTwice
 - [x] repo DoCheckIn 활성 회원권 없음 → ErrNoRows (step7)  // covered: internal/repo/checkins_repo_test.go:TestDoCheckIn_NoActiveMembership_ReturnsErrNoRows
 - [x] repo FindUnstartedMembership → 미래 회원권 row (step7)  // covered: internal/repo/checkins_repo_test.go:TestFindUnstartedMembership_ReturnsFutureRow
+- [x] repo DoCheckIn 다른 지점(branch_id) 호출 → ErrNoRows (조작된 클라 차단 안전망, postaudit)  // covered: internal/repo/checkins_repo_test.go:TestDoCheckIn_RejectsForeignBranch
 
 ## 매출·대량 연장
 
