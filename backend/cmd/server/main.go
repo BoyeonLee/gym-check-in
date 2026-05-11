@@ -203,6 +203,10 @@ func run() error {
 	}
 	salesHandlers := &httpapi.SalesHandlers{Pool: pool}
 	bulkHandlers := &httpapi.BulkExtendHandlers{Pool: pool, Clock: util.SystemClock{}}
+	// step 10 — membership lifecycle (grant, detail, pause / unpause /
+	// cancel-pause, refund). Same clock as bulk-extend so KST today and
+	// idempotency freshness windows stay coherent across the suite.
+	membershipsHandler := &httpapi.MembershipsHandler{Pool: pool, Clock: util.SystemClock{}}
 
 	// step 5 — public (kiosk) routes share the same IP rate limit as the
 	// auth group so a hostile client can't DoS the search endpoint either.
@@ -249,6 +253,16 @@ func run() error {
 	// Idempotency-Key validation internally.
 	apiGlobal.GET("/sales/summary", salesHandlers.Summary)
 	apiGlobal.POST("/memberships/bulk-extend", bulkHandlers.BulkExtend)
+
+	// step 10 — membership lifecycle. All routes are role-agnostic (branch
+	// admins act on their own branch members; the handler enforces scope
+	// via scopeFromContext). Grant + Refund require Idempotency-Key.
+	api.POST("/members/:id/memberships", membershipsHandler.Grant)
+	api.GET("/memberships/:id", membershipsHandler.Get)
+	api.POST("/memberships/:id/pause", membershipsHandler.Pause)
+	api.POST("/memberships/:id/unpause", membershipsHandler.Unpause)
+	api.POST("/memberships/:id/cancel-pause", membershipsHandler.CancelPause)
+	api.POST("/memberships/:id/refund", membershipsHandler.Refund)
 
 	// In-process cron: KST 00:01 daily batch.RunExpiry. Registered before
 	// the HTTP listener so a fast SIGTERM during startup still sees the

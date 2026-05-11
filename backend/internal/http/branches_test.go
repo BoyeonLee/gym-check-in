@@ -68,6 +68,7 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	}
 	salesH := &httpapi.SalesHandlers{Pool: pool}
 	bulkH := &httpapi.BulkExtendHandlers{Pool: pool, Clock: clock}
+	membershipsH := &httpapi.MembershipsHandler{Pool: pool, Clock: clock}
 
 	r := gin.New()
 	r.Use(middleware.RequestID())
@@ -100,6 +101,14 @@ func newAdminFixture(t *testing.T) *adminFixture {
 		// Admin check-in list — branch admins get scopeBranchID via
 		// scopeFromContext; globals can drill down with ?branchId=.
 		priv.GET("/check-ins", checkinH.List)
+
+		// Step 10 — membership lifecycle.
+		priv.POST("/members/:id/memberships", membershipsH.Grant)
+		priv.GET("/memberships/:id", membershipsH.Get)
+		priv.POST("/memberships/:id/pause", membershipsH.Pause)
+		priv.POST("/memberships/:id/unpause", membershipsH.Unpause)
+		priv.POST("/memberships/:id/cancel-pause", membershipsH.CancelPause)
+		priv.POST("/memberships/:id/refund", membershipsH.Refund)
 
 		g := priv.Group("", middleware.RequireGlobal())
 		g.POST("/branches", branchH.Create)
