@@ -15,7 +15,7 @@ gym-check-in/
 
 ## 패턴
 - **프론트엔드**: 라우트 분할로 두 앱을 한 번들에 담는다. `/` = 키오스크(회원용), `/admin/*` = 관리자(반응형 웹앱). 서버 상태는 React Query, 로컬 UI 상태는 `useState`/`useReducer`, 지점 선택은 `localStorage` + Context.
-- **백엔드**: `handler → service → repo` 3계층. SQL은 `repo`에서만. 요청 검증은 Gin 바인딩 태그 + 명시적 유효성 검사. 관리자 세션은 JWT.
+- **백엔드**: 원칙은 `handler → service → repo` 3계층이지만, **MVP(Phase 2)에서는 도메인 서비스 계층(`internal/domain`)을 별도로 추출하지 않고 핸들러에 흡수**했다 — 도메인 로직(권한 체크, 회원권 라이프사이클, 체크인 트랜잭션)은 `internal/http`의 핸들러가 직접 `WithTx`로 repo를 조립한다. 복잡도가 늘면(여러 핸들러가 같은 도메인 로직을 중복할 때) 그때 `internal/domain`으로 추출한다. SQL은 항상 `repo`에서만. 요청 검증은 Gin 바인딩 태그 + 명시적 유효성 검사. 관리자 세션은 JWT.
 - **DB 접근**: 프론트는 반드시 Gin API를 통해서만 접근. 클라이언트에서 DB 직결 금지.
 - **멀티테넌시**: `branches` 테이블 + 대부분 리소스가 `branch_id`를 가짐. 지점 관리자는 서비스 계층에서 `branch_id` 필터 강제, 전역 관리자는 전체 조회 허용.
 

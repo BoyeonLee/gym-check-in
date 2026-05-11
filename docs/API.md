@@ -78,9 +78,18 @@
 ```
 응답 200:
 ```json
-{ "access_token": "...", "expires_in": 1800 }
+{
+  "access_token": "...",
+  "expires_in": 1800,
+  "must_change_password": false,
+  "role": "branch",
+  "branch_id": 3,
+  "username": "kim"
+}
 ```
-에러: 401 `INVALID_REFRESH` (만료·서명 오류·무효화 목록 일치).
+- `access_token`/`expires_in` 외 4개 필드는 admin row 재조회 결과를 그대로 반환 — 프론트가 access_token을 디코딩하지 않고도 권한 변동(role 토글·branch 이동·임시비번 강제 변경)을 즉시 UI에 반영할 수 있도록 한다.
+- `branch_id`는 `role='global'`이면 `null`.
+- 에러: 401 `INVALID_REFRESH` (만료·서명 오류·무효화 목록 일치 또는 admin이 soft-deleted/비번 변경 등으로 stale).
 
 ### POST `/api/admin/logout`
 헤더: `Authorization: Bearer <access>` + body의 refresh.
@@ -448,9 +457,11 @@ EXCLUDE 충돌 시 응답 409:
 {
   "id": 5678,
   "checked_in_at": "2026-04-27T18:23:00+09:00",
-  "membership": { "type": "pass10", "remaining": 7, "end_date": "2026-06-01" }
+  "membership": { "type": "pass10", "remaining": 7, "end_date": "2026-06-01" },
+  "expired_after": false
 }
 ```
+- `expired_after`: 이 체크인으로 회원권이 expired로 전환된 경우만 `true`(횟수권에서 마지막 1회를 차감한 케이스 — 같은 트랜잭션에서 `status='expired'`로 전환되어 다음 체크인부터 422). 일반 케이스(아직 잔여 있음, monthly)에서는 `false`이며 응답에서 생략될 수 있다(omitempty).
 
 ### GET `/api/check-ins` (관리자)
 쿼리: `from`, `to` (ISO 날짜), `branchId?` (전역만 미지정 가능), `aggregate=raw|daily` (기본 raw).
