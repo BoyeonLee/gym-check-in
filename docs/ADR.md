@@ -129,3 +129,39 @@ MVP 속도를 최우선으로 한다. 단일 바이너리 배포, 외부 의존 
 - 멀티 인스턴스 도입은 Redis·외부 스케줄러·세션 동기화 등 운영 복잡도가 곱해짐 — MVP 속도와 정면 충돌.
 - ADR-008 Redis 트리거(p99 > 100ms 또는 인스턴스 2개 이상)와 함께 도입.
 **트레이드오프**: 인스턴스 재시작 시 5초 캐시·rate limit 카운터 초기화. 자정 배치가 인스턴스 다운 시 누락 가능 — `./bin/server batch run-expiry` 수동 실행으로 복구(OPERATIONS.md). 다중 인스턴스 시 (1) 캐시·rate limit Redis로 이전, (2) 자정 배치는 외부 cron 또는 `pg_advisory_lock`으로 직렬화.
+
+### ADR-017: Frontend 라이브러리 화이트리스트 (Phase 3)
+**결정**: Phase 3에서 프론트엔드(`frontend/`) 구현 시 사용 가능한 라이브러리를 아래 화이트리스트로 고정한다. ADR-001/008이 백엔드 스택을 다루므로, 프론트엔드 스택은 본 ADR을 정본으로 한다.
+
+**Runtime 의존성 (허용)**:
+- `react@18`, `react-dom@18` — UI 프레임워크
+- `react-router-dom@6` — SPA 라우팅 (`/`, `/kiosk/*`, `/admin/*`)
+- `@tanstack/react-query@5` — 서버 상태(쿼리·invalidate·optimistic). Redux 등 별도 상태관리 라이브러리 대체.
+- `vite-plugin-pwa@0.x` — PWA manifest + service worker 자동 생성 (ADR-005 풀스크린 키오스크 구현 수단)
+- `clsx` **또는** `class-variance-authority` — 조건부 className. 둘 중 하나만 도입(중복 금지).
+
+**Dev 의존성 (허용)**:
+- `vite@5`, `@vitejs/plugin-react@4` — 빌드 도구
+- `typescript@5` (strict) — 타입 체커
+- `tailwindcss@3`, `postcss`, `autoprefixer` — 스타일링
+- `vitest@1`, `@testing-library/react@14`, `@testing-library/jest-dom`, `@testing-library/user-event` — 단위/컴포넌트 테스트
+- `msw@2` — 컴포넌트/훅 테스트의 API 모킹
+- `@playwright/test@1.x` — e2e 테스트 (CI 빌드 포함)
+- `jsdom` — Vitest DOM 환경
+- `eslint`, `@typescript-eslint/parser`, `@typescript-eslint/eslint-plugin`, `eslint-plugin-react-hooks` — 정적 분석
+
+**금지 라이브러리 (명시)**:
+- **외부 STT SDK** (Whisper API SDK, Google Cloud Speech 등) — 키오스크 음성 인식은 브라우저 표준 `window.SpeechRecognition`만 사용(ADR-003 키오스크 결정과 ADR-001/002의 외부 의존 최소 원칙 재확인). 외부 STT는 비용·네트워크 의존·개인정보 흐름 모두 부담.
+- **UI 라이브러리** (MUI, Chakra, shadcn/ui, Ant Design 등) — `frontend/ui-design/*.jsx` 시안이 픽셀 단위로 정해져 있고 Tailwind + 자체 컴포넌트로 충분. 디자인 토큰은 `frontend/ui-design/styles.css`를 정본으로 한다.
+- **상태 관리 라이브러리** (Redux, Zustand, Jotai, MobX 등) — 서버 상태는 TanStack Query, 클라이언트 컨텍스트(BranchContext/AuthContext)는 React Context로 충분.
+- **날짜 라이브러리** (dayjs, moment, date-fns, luxon 등) — 백엔드가 모든 timestamp를 `+09:00` 오프셋으로 직렬화하므로 `Intl.DateTimeFormat`과 `Date`만으로 처리한다. Phase 5+에 복잡한 날짜 산수가 필요해지면 재논의.
+
+**이유**:
+- ADR의 핵심 철학(MVP 속도·외부 의존 최소·작동하는 최소 구현)을 프론트엔드에도 동일하게 적용한다.
+- 화이트리스트를 미리 박아두면 후속 step(scaffold·각 화면 구현)에서 frontend agent가 라이브러리 선택을 고민하지 않아도 되고, 시안과의 정합성을 일관되게 유지할 수 있다.
+- 금지 목록을 명시하면 "그냥 편하니까 dayjs 깔자"·"shadcn 쓰면 빠르겠다" 같은 우회를 사전에 차단한다.
+
+**트레이드오프**:
+- 픽셀 단위 시안을 Tailwind + 자체 컴포넌트로 옮기는 비용이 UI 라이브러리 도입보다 크다. 다만 시안이 이미 명확해 한 번 옮기면 일관성을 깨지 않는다.
+- 날짜 라이브러리 없이 `Intl`만으로 처리하면 보일러플레이트가 약간 늘지만, MVP의 날짜 표시는 단순(만료일 미리보기, 잠금 카운트다운 정도)해 감당 가능.
+- 라이브러리 추가가 필요할 때마다 본 ADR을 갱신 또는 새 ADR 신설 — 명시적 절차를 강제하는 게 의도.

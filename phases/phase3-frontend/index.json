@@ -6,9 +6,9 @@
       "step": 1,
       "name": "shared-frontend-prep",
       "agent": "shared",
-      "status": "pending",
+      "status": "completed",
       "depends_on": [],
-      "summary": "docs/ROADMAP.md Phase 3 정의 확장(스캐폴드→화면 구현+자동 테스트까지) + docs/ADR.md ADR-008 라이브러리 화이트리스트에 React 18, TypeScript strict, Tailwind, React Router, TanStack Query, Vitest, MSW, vite-plugin-pwa, Playwright 추가 + frontend/ui-design 참조 규칙 명시."
+      "summary": "docs/ADR.md에 ADR-017(Frontend 라이브러리 화이트리스트) 신설 — 허용(React 18, react-router-dom 6, TanStack Query 5, Tailwind 3, vite-plugin-pwa, Vitest 1, MSW 2, Playwright 1, jsdom 등) / 금지(외부 STT SDK, UI 라이브러리, 상태 관리 라이브러리, 날짜 라이브러리) 명시. docs/ROADMAP.md Phase 3 정의 확장(스캐폴드→화면 구현 완성형+Vitest+Playwright e2e+PWA 아이콘) — 산출물·작업 항목·검증 기준 신규 항목 추가. frontend/CLAUDE.md 디자인 참조 섹션 4가지 규칙으로 확장 — tokens.css 복사 정책, JSX 시안 픽셀 단위 정본(±4px), 시안 없는 화면 토큰 재사용, ui-design 직접 import 금지. 3개 파일만 변경(backend/·frontend/src/·db/ 0 변경)."
     },
     {
       "step": 2,

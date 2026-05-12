@@ -121,4 +121,7 @@ API 명세는 `docs/API.md` 참고.
 - 로그인 잠금: 백엔드 응답이 `ACCOUNT_LOCKED`이면 잠금 해제 시각까지 폼을 비활성화하고 카운트다운을 표시한다. `TEMP_PASSWORD_EXPIRED`는 별도 안내 분기로 처리.
 
 ## 디자인 참조
-`docs/UI_GUIDE.md`의 색상·컴포넌트·타이포 토큰을 그대로 Tailwind 클래스/테마로 사용한다.
+- **토큰 정본은 `frontend/ui-design/styles.css` + `docs/UI_GUIDE.md`**. Phase 3 step 2 scaffold에서 `frontend/ui-design/styles.css`의 CSS 변수(주석 포함)를 `frontend/src/styles/tokens.css`로 그대로 복사한다. `tailwind.config.ts`는 이 CSS 변수들을 참조해 색상·간격·타이포 토큰을 노출한다. 토큰을 직접 수정하지 않는다 — 변경이 필요하면 `frontend/ui-design/styles.css`(정본)를 먼저 고치고 `tokens.css`에 재복사한다.
+- **화면 레이아웃은 `frontend/ui-design/*.jsx` 시안이 픽셀 단위 정본**이다 — `kiosk-screens-1.jsx`, `kiosk-screens-2.jsx`, `admin-shell.jsx`, `admin-members.jsx`, `admin-plan-grant.jsx`, `admin-sales-login.jsx`. JSX 구조·className·간격·아이콘 위치를 그대로 따른다. 시안과 달라야 할 정당한 이유가 있을 때(예: 반응형 모바일 분기, 접근성 보강)만 변경하고 step.md 또는 PR 본문에 사유를 적는다. 허용 오차 — 색상은 토큰 일치, 간격은 ±4px 이하.
+- **시안에 없는 화면**(예: PasswordChange의 인라인 강도 가이드 텍스트 색상, 토스트, idle 타임아웃 카운트다운 안내 등)은 같은 토큰을 사용해 시안과 시각적으로 일관되게 만든다. 새 토큰을 추가하지 말고 기존 토큰의 조합으로 해결한다.
+- **`frontend/ui-design/` 폴더는 참조 전용**이다. frontend 구현(`src/`) 어디에서도 `ui-design` 내부 파일을 `import` 하지 않는다. 토큰은 복사된 `tokens.css`로만, 레이아웃은 시안 파일을 "보고" 손으로 재작성한다(JSX를 그대로 import하면 시안 폴더와 구현 코드가 결합돼 단절이 깨진다).

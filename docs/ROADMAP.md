@@ -221,9 +221,9 @@
 
 ---
 
-## Phase 3 — Frontend (Vite + React) 스캐폴드
+## Phase 3 — Frontend (Vite + React) 스캐폴드 + 화면 구현 + 자동 테스트
 **의존**: Phase 2 통과 (백엔드 API가 로컬에서 응답).
-**참조**: `frontend/CLAUDE.md`, `docs/UI_GUIDE.md`
+**참조**: `frontend/CLAUDE.md`, `docs/UI_GUIDE.md`, `frontend/ui-design/` 시안 (정본), `docs/ADR.md` ADR-017(라이브러리 화이트리스트)
 
 ### 산출물
 - `frontend/package.json`, `vite.config.ts`, `tailwind.config.ts`, `tsconfig.json` (strict)
@@ -236,6 +236,11 @@
 - `src/components/` 공통 UI (Button, Card, Table, NumberPad — UI_GUIDE 토큰 그대로)
 - `public/manifest.webmanifest` — `display: fullscreen`, 키오스크 아이콘 + `start_url: /`
 - `.env.example` — `VITE_API_URL`
+- **화면 구현 완성형**: 키오스크 7화면(BranchSetup·Idle·InputSelect·VoiceSearch·TypingSearch·MemberPick·CheckInDone) + 관리자 전 화면(Login·PasswordChange·Members·Memberships(상세/부여/정지/조기활성화/취소/환불)·CheckIns·Sales·BulkExtend·Admins·Branches). 빈 컴포넌트 X.
+- **시안 정합성**: `frontend/ui-design/*.jsx`(kiosk-screens-1/2, admin-shell, admin-members, admin-plan-grant, admin-sales-login)와 픽셀 단위 정합. 허용 오차 — 색상은 토큰 일치, 간격은 ±4px 이하. `frontend/ui-design/styles.css`를 `src/styles/tokens.css`로 복사(직접 수정 금지, Tailwind config가 CSS 변수를 참조).
+- **Vitest 단위/컴포넌트 테스트**: `useSpeechRecognition`·`useIdleTimeout`·`useIdempotencyKey` 훅, `api/client` 래퍼(401 자동 refresh 재시도), MemberPick 마스킹(`010-****-1234`/`**-04-15`/`#1234`), 폼 검증(전화 11자리·비번 강도·days 1~90·monthly months·amount > 0). MSW로 API 모킹.
+- **Playwright e2e**: 골든 패스 시나리오 12~15개 — 관리자 로그인→비번변경→대시보드, 회원 등록→회원권 부여→체크인→매출 확인, 키오스크 검색→체크인→오늘 카운트 +1, 정지/환불, 잠금 카운트다운, MEMBERSHIP_NOT_STARTED, truncated 배너, 5초 롱프레스 BranchSetup 복귀, idle 10초 타임아웃, 토큰 자동 refresh.
+- **PWA 아이콘**: `frontend/ui-design/assets/`에 사용자 제공 PWA 아이콘(192/512/maskable) 연결 → `manifest.webmanifest`에 등록.
 
 ### 작업 항목
 - [ ] Vite 초기화 + Tailwind + UI_GUIDE 색상/토큰을 `tailwind.config.ts`에 등록
@@ -264,6 +269,17 @@
 - [ ] 로그인 폼 — `ACCOUNT_LOCKED` 응답 시 잠금 해제 시각까지 카운트다운
 - [ ] PWA 매니페스트 + `vite-plugin-pwa`(또는 수동 link 태그) 적용 → Lighthouse "설치 가능" 통과
 - [ ] 빈 페이지에서 백엔드 헬스체크·로그인이 실제로 통신되는지 확인
+- [ ] **관리자 화면 전체 구현** (회원·회원권·체크인·매출·대량 연장·지점·관리자) — 빈 컴포넌트 단계 종료
+- [ ] **회원권 부여/정지/조기활성화(unpause)/취소(cancel-pause)/환불 폼** + `useIdempotencyKey` 헤더 첨부
+- [ ] **매출 페이지 gross/refund/net 분리 표시** (전역 전용, 카드 3개 + by_method/by_day 분리표)
+- [ ] **BulkExtend 폼** (전역 전용, days 1~90 정수 한도, MEMBERSHIP_PERIOD_OVERLAP 시 `first_conflict_membership_id` 표시)
+- [ ] **관리자 CRUD + 비번 리셋** (임시비번 1회 표시·복사·`expires_at` 안내, 본인 role/branch_id 비활성)
+- [ ] **회원 상세 한 화면** (헤더 + active 회원권 카드 + 회원권 이력 + 결제 이력, `GET /api/members/:id` 단일 호출)
+- [ ] **회원권 상세 페이지** (`GET /api/memberships/:id` 결과로 폼 노출 여부 결정, events + payments)
+- [ ] **`frontend/ui-design/styles.css` → `src/styles/tokens.css` 복사** + Tailwind config가 CSS 변수 참조
+- [ ] **Vitest + MSW 셋업** + 핵심 훅·API 래퍼·마스킹·폼 검증 단위/컴포넌트 테스트
+- [ ] **Playwright 셋업** + e2e 골든 패스 시나리오 12~15개
+- [ ] **PWA 아이콘** (사용자 제공) manifest 연결 — 192/512/maskable
 
 ### 검증 기준
 - `pnpm build` 통과 (TS strict 에러 0)
@@ -281,14 +297,20 @@
 - 키오스크 헤더 카운터가 체크인 직후 즉시 +1로 갱신
 - 태블릿 Chrome에서 "홈 화면에 추가" 후 아이콘 진입 시 주소창·탭 없이 풀스크린 표시
 - BulkExtend 폼에서 같은 세션에 두 번 제출 시 같은 Idempotency-Key가 전송되어 한 번만 적용
+- `pnpm build` 통과 (TS strict 에러 0, 번들 산출물 생성)
+- `pnpm test` (Vitest) 모두 통과 — 훅·API 래퍼·마스킹·폼 검증 커버
+- `pnpm test:e2e` (Playwright) 모두 통과 — 골든 패스 12~15개 시나리오
+- 브라우저에서 키오스크/관리자 골든 패스를 수동으로 한 번 클릭(검증 자동화 외 시각 확인)
+- `frontend/ui-design/*.jsx` 시안과 픽셀 단위 정합 — 색상 토큰 일치, 간격 ±4px 이하
+- PWA 매니페스트의 아이콘(192/512/maskable)이 `frontend/ui-design/assets/`의 사용자 제공 파일과 연결됨
 
 ---
 
-## Phase 4 — 배포 환경 결정 (스캐폴드 이후)
+## Phase 4 — 배포 환경 결정 (Phase 3 이후)
 **의존**: Phase 3 통과.
 - [ ] 호스팅 후보 비교 (Fly.io / Railway / Render) — 비용·DB 통합·배포 난이도
 - [ ] 결정 사항을 `docs/ADR.md`에 ADR-010으로 추가
-- [ ] CI(빌드·테스트) + 배포 파이프라인 정의
+- [ ] CI(빌드·테스트) + 배포 파이프라인 정의 (Phase 3에서 셋업한 Vitest·Playwright 빌드 step을 CI에 통합)
 - [x] 태블릿 운영 가이드(기종별 "홈 화면 추가" 절차) — `docs/OPERATIONS.md`에 작성 완료
 
 ---
